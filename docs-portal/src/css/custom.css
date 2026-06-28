@@ -178,7 +178,7 @@ pre code {
   background: var(--ifm-color-primary);
   border: none;
   border-radius: 8px;
-  color: #fff;
+  color: var(--ifm-color-white);
   font-weight: 600;
   font-size: 0.85rem;
   cursor: pointer;
@@ -266,7 +266,7 @@ pre code {
 
 [data-theme='dark'] .graphql-config-bar__button {
   background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  color: #fff;
+  color: var(--ifm-color-white);
 }
 
 [data-theme='dark'] .graphql-config-bar__button:hover:not(:disabled) {
