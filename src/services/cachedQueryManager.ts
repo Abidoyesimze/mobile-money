@@ -94,6 +94,17 @@ export class CacheTags {
   static merchantWebhooks(userId: string): string {
     return `merchant:${userId}:webhooks`;
   }
+
+  /**
+   * Tag for provider configuration cache entries.
+   * Pass a specific providerName for per-provider invalidation, or omit it
+   * to get the global provider config tag that covers all providers.
+   */
+  static providerConfig(providerName?: string): string {
+    return providerName
+      ? `provider:config:${providerName.toLowerCase()}`
+      : `provider:config`;
+  }
 }
 
 /**

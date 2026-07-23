@@ -62,13 +62,36 @@ export const DEFAULT_PROVIDER_LIMITS: ProviderLimitsConfig = {
   [MobileMoneyProvider.SMS_PORTAL]: { minAmount: 100, maxAmount: 5000000 },
 };
 
-// PROVIDER_LIMITS is now dynamically loaded from config
-export const PROVIDER_LIMITS: ProviderLimitsConfig = getProviderLimitsConfig();
+// PROVIDER_LIMITS is now dynamically loaded from config on every access via Proxy.
+// This ensures that runtime config updates (e.g. via convict reloads or
+// admin API calls) are reflected immediately without a process restart.
+export const PROVIDER_LIMITS: ProviderLimitsConfig = new Proxy(
+  {} as ProviderLimitsConfig,
+  {
+    get(_target, prop: string) {
+      const config = getProviderLimitsConfig();
+      return config[prop as keyof ProviderLimitsConfig];
+    },
+    ownKeys() {
+      return Object.keys(getProviderLimitsConfig());
+    },
+    getOwnPropertyDescriptor(_target, prop: string) {
+      return {
+        enumerable: true,
+        configurable: true,
+        value: getProviderLimitsConfig()[prop as keyof ProviderLimitsConfig],
+      };
+    },
+  },
+);
 
 export function getProviderLimits(
   provider: MobileMoneyProvider,
 ): ProviderLimits {
-  const limits = PROVIDER_LIMITS[provider];
+  // Re-read from convict on every invocation so any in-process config update
+  // is picked up immediately by all callers.
+  const config = getProviderLimitsConfig();
+  const limits = config[provider];
   if (!limits) {
     throw new Error(`Unknown provider: ${provider}`);
   }
@@ -107,8 +130,11 @@ function validateLimitsConfig(): void {
     MobileMoneyProvider.SMS_PORTAL,
   ];
 
+  // Re-read from convict so validation always reflects the current config state.
+  const config = getProviderLimitsConfig();
+
   for (const provider of providers) {
-    const limits = PROVIDER_LIMITS[provider];
+    const limits = config[provider];
 
     if (limits.minAmount <= 0 || !isFinite(limits.minAmount)) {
       throw new Error(
