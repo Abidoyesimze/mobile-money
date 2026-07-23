@@ -32,6 +32,10 @@ import {
   loginRateLimiter,
   registerRateLimiter,
 } from "../middleware/authRateLimit";
+import {
+  verifyDeviceRateLimiter,
+  resendVerificationRateLimiter,
+} from "../middleware/rateLimiter";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { createError } from "../middleware/errorHandler";
 import {
@@ -524,6 +528,7 @@ authRoutes.get(
  */
 authRoutes.post(
   "/verify-device",
+  verifyDeviceRateLimiter,
   authenticateToken,
   async (req: Request, res: Response) => {
     const payload = req.jwtUser as JWTPayload;
@@ -614,6 +619,7 @@ authRoutes.post(
  */
 authRoutes.post(
   "/resend-verification",
+  resendVerificationRateLimiter,
   authenticateToken,
   async (req: Request, res: Response) => {
     const payload = req.jwtUser as JWTPayload;

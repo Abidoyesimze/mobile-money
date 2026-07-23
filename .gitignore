@@ -4,6 +4,7 @@ node_modules/
 # Build outputs
 dist/
 contracts/target/
+benchmarks/target/
 *.tsbuildinfo
 .docusaurus/
 
