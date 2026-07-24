@@ -233,15 +233,22 @@ export const createKYCRoutes = (db: Pool): Router => {
         });
 
         const canViewRaw = Boolean(res.locals.canViewRawKycUploads);
+        let responseFileUrl: string = REDACTED_FILE_URL;
+
+        if (canViewRaw && uploadResult.key) {
+          try {
+            responseFileUrl = await getSignedObjectUrl(uploadResult.key);
+          } catch {
+            responseFileUrl = REDACTED_FILE_URL;
+          }
+        }
 
         res.status(201).json({
           success: true,
           data: {
             document_id: documentResult.rows[0].id,
             provider_document_id: providerDocument?.id,
-            file_url: canViewRaw
-              ? documentResult.rows[0].file_url
-              : REDACTED_FILE_URL,
+            file_url: responseFileUrl,
             applicant_id,
             uploaded_at: documentResult.rows[0].created_at,
           },
