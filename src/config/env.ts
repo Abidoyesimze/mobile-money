@@ -22,9 +22,42 @@ export const env = cleanEnv(process.env, {
     desc: "Whether the application is running in sandbox mode",
     default: false,
   }),
+  DR_DATABASE_URL: str({
+    desc: "PostgreSQL connection string for disaster recovery / read-replica",
+    example: "postgresql://user:password@dr-host:5432/dbname",
+    default: "",
+  }),
   APP_MAINTENANCE_MODE: bool({
     desc: "Whether the application is in maintenance mode (read-only)",
     default: false,
+  }),
+  DB_MAX_CONNECTIONS: num({
+    desc: "Maximum number of connections in each database pool",
+    default: 50,
+  }),
+  DB_POOL_MAX_USES: num({
+    desc: "Maximum number of uses for a pool connection before it is closed and replaced (0 = unlimited)",
+    default: 0,
+  }),
+  DB_POOL_ALLOW_EXIT_ON_IDLE: bool({
+    desc: "Allow idle pool connections to exit when not in use",
+    default: false,
+  }),
+  DB_POOL_IDLE_TIMEOUT_MS: num({
+    desc: "Idle timeout in milliseconds for primary pool connections",
+    default: 15000,
+  }),
+  DB_POOL_CONNECTION_TIMEOUT_MS: num({
+    desc: "Connection timeout in milliseconds for primary pool connections",
+    default: 5000,
+  }),
+  DB_REPLICA_IDLE_TIMEOUT_MS: num({
+    desc: "Idle timeout in milliseconds for replica pool connections",
+    default: 30000,
+  }),
+  DB_REPLICA_CONNECTION_TIMEOUT_MS: num({
+    desc: "Connection timeout in milliseconds for replica pool connections",
+    default: 500,
   }),
   INDEX_REINDEX_JOB_ENABLED: bool({
     default: true,
@@ -141,6 +174,7 @@ export const {
   DATABASE_URL,
   SANDBOX_DATABASE_URL,
   IS_SANDBOX,
+  DR_DATABASE_URL,
   STELLAR_ISSUER_SECRET,
   REDIS_URL,
   STELLAR_HORIZON_URL,
