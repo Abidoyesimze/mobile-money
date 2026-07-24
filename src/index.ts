@@ -60,6 +60,7 @@ import {
 import { requireAuth } from "./middleware/auth";
 import { responseTime } from "./middleware/responseTime";
 import { requestId } from "./middleware/requestId";
+import { createCorsMiddleware } from "./middleware/cors";
 import { readReplicaRoutingMiddleware } from "./middleware/readReplicaRouting";
 import { dbConnectionLeakDetector } from "./middleware/dbConnectionLeakDetector";
 import { i18nMiddleware } from "./utils/i18n";
@@ -138,6 +139,7 @@ app.use(sentryBreadcrumbMiddleware);
 
 app.use(metricsMiddleware);
 app.use(helmet());
+app.use(createCorsMiddleware());
 
 // Compression middleware
 if (process.env.COMPRESSION_ENABLED !== "false") {

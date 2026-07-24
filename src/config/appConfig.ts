@@ -441,6 +441,16 @@ export const configSchema = convict({
       env: "COMPRESSION_LEVEL",
     },
   },
+
+  // Cross-origin request settings
+  cors: {
+    allowedOrigins: {
+      doc: "List of allowed CORS origins loaded from config files",
+      format: Array,
+      default: ["http://localhost:3000"],
+      env: "CORS_ALLOWED_ORIGINS",
+    },
+  },
 });
 
 /**
