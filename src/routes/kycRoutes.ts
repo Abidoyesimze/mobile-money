@@ -15,7 +15,7 @@ import {
   FileSignature,
 } from "../services/stellar/hsmService";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { getS3Client, s3Config } from "../config/s3";
+import { getS3Client, s3Config, getSignedObjectUrl } from "../config/s3";
 
 const COMPLIANCE_OFFICER_ROLE = "compliance_officer";
 const REDACTED_FILE_URL = "[REDACTED]";
@@ -324,10 +324,13 @@ export const createKYCRoutes = (db: Pool): Router => {
         const canViewRaw = Boolean(res.locals.canViewRawKycUploads);
         const documents = await Promise.all(
           result.rows.map(async (row) => {
-            const doc = maskFileUrl(row, canViewRaw);
             let hsmSigned = false;
+            let signedFileUrl: string | null = null;
+
             if (row.s3_key) {
               try {
+                signedFileUrl = await getSignedObjectUrl(row.s3_key);
+
                 const s3Client = getS3Client();
                 const head = await s3Client.send(
                   new GetObjectCommand({
@@ -340,7 +343,13 @@ export const createKYCRoutes = (db: Pool): Router => {
                 // S3 object not accessible — skip verification status
               }
             }
-            return { ...doc, hsm_signed: hsmSigned };
+
+            const doc = {
+              ...row,
+              file_url: signedFileUrl || row.file_url,
+            };
+            const masked = maskFileUrl(doc, canViewRaw);
+            return { ...masked, hsm_signed: hsmSigned };
           }),
         );
 

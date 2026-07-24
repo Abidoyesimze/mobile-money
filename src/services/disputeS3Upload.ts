@@ -41,6 +41,7 @@ export const uploadDisputeEvidenceToS3 = async (
       Key: key,
       Body: file.buffer,
       ContentType: file.mimetype,
+      ServerSideEncryption: "AES256",
       Metadata: {
         originalName: file.originalname,
         disputeId: disputeId,
@@ -49,8 +50,6 @@ export const uploadDisputeEvidenceToS3 = async (
         fileSize: file.size.toString(),
         ...metadata,
       },
-      // Set appropriate ACL (private by default)
-      // ACL: 'private',
     });
 
     // Upload to S3
