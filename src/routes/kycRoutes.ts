@@ -14,7 +14,7 @@ import {
   KmsFileSigner,
   FileSignature,
 } from "../services/stellar/hsmService";
-import { GetObjectCommand } from "@aws-sdk/client-s3";
+import { GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { getS3Client, s3Config, getSignedObjectUrl } from "../config/s3";
 
 const COMPLIANCE_OFFICER_ROLE = "compliance_officer";
@@ -340,7 +340,7 @@ export const createKYCRoutes = (db: Pool): Router => {
 
                 const s3Client = getS3Client();
                 const head = await s3Client.send(
-                  new GetObjectCommand({
+                  new HeadObjectCommand({
                     Bucket: s3Config.bucket,
                     Key: row.s3_key,
                   }),
