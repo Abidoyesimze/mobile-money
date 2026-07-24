@@ -6,6 +6,7 @@ import { z } from "zod";
 import { UserModel } from "../models/users";
 import { createError } from "../middleware/errorHandler";
 import { ERROR_CODES } from "../constants/errorCodes";
+import { validateExpiryDate } from "../utils/validators";
 import {
   commit,
   commitWithBlinding,
@@ -48,13 +49,42 @@ const CreateApplicantSchema = z.object({
   custom_fields: z.record(z.string(), z.any()).optional(), // Added custom fields support
 });
 
-const UploadDocumentSchema = z.object({
-  applicant_id: z.string(),
-  type: z.nativeEnum(DocumentType),
-  side: z.enum(["front", "back"]).optional(),
-  filename: z.string().min(1, "Filename is required"),
-  data: z.string().min(1, "Document data is required"),
-});
+const UploadDocumentSchema = z
+  .object({
+    applicant_id: z.string(),
+    type: z.nativeEnum(DocumentType),
+    side: z.enum(["front", "back"]).optional(),
+    filename: z.string().min(1, "Filename is required"),
+    data: z.string().min(1, "Document data is required"),
+    expiry_date: z.string().optional(),
+    expiryDate: z.string().optional(),
+    expiration_date: z.string().optional(),
+    expirationDate: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    const rawDate =
+      data.expiry_date ||
+      data.expiryDate ||
+      data.expiration_date ||
+      data.expirationDate;
+
+    if (rawDate !== undefined && rawDate !== null && rawDate !== "") {
+      const validation = validateExpiryDate(rawDate);
+      if (!validation.isValid) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: validation.error || "Invalid expiry date",
+          path: [
+            data.expiry_date
+              ? "expiry_date"
+              : data.expiryDate
+                ? "expiryDate"
+                : "expiry_date",
+          ],
+        });
+      }
+    }
+  });
 
 const CreateWorkflowRunSchema = z.object({
   applicant_id: z.string(),
@@ -217,8 +247,9 @@ export class KYCController {
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
-        throw createError(ERROR_CODES.INVALID_INPUT, "Validation error", {
-          error: "Validation error",
+        const primaryMessage = error.issues[0]?.message || "Validation error";
+        throw createError(ERROR_CODES.INVALID_INPUT, primaryMessage, {
+          error: primaryMessage,
           details: error.issues,
         });
       }
