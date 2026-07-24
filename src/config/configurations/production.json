@@ -8,5 +8,13 @@
   },
   "logging": {
     "enableSlowQueryLogging": false
+  },
+  "worker": {
+    "concurrency": 50,
+    "syncConcurrency": 20,
+    "webhookRetryConcurrency": 10,
+    "accountingRetryConcurrency": 5,
+    "accountingTokenRefreshConcurrency": 3,
+    "providerBalanceAlertConcurrency": 1
   }
 }

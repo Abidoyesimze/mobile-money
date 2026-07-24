@@ -134,6 +134,30 @@ export const env = cleanEnv(process.env, {
     default: "http://localhost:3000/api/accounting/xero/callback",
     desc: "Xero OAuth 2.0 Redirect URI",
   }),
+  TRANSACTION_WORKER_CONCURRENCY: num({
+    default: 50,
+    desc: "Transaction worker concurrency limit for parallel job processing",
+  }),
+  SYNC_WORKER_CONCURRENCY: num({
+    default: 20,
+    desc: "Accounting sync worker concurrency limit",
+  }),
+  WEBHOOK_RETRY_WORKER_CONCURRENCY: num({
+    default: 10,
+    desc: "Webhook retry worker concurrency limit",
+  }),
+  ACCOUNTING_RETRY_WORKER_CONCURRENCY: num({
+    default: 5,
+    desc: "Accounting retry worker concurrency limit",
+  }),
+  ACCOUNTING_TOKEN_REFRESH_WORKER_CONCURRENCY: num({
+    default: 3,
+    desc: "Accounting token refresh worker concurrency limit",
+  }),
+  PROVIDER_BALANCE_ALERT_WORKER_CONCURRENCY: num({
+    default: 1,
+    desc: "Provider balance alert worker concurrency limit (default 1 – sequential to prevent duplicate alerts)",
+  }),
 });
 
 // Re-export specific values for convenience
@@ -162,4 +186,10 @@ export const {
   XERO_CLIENT_ID,
   XERO_CLIENT_SECRET,
   XERO_REDIRECT_URI,
+  TRANSACTION_WORKER_CONCURRENCY,
+  SYNC_WORKER_CONCURRENCY,
+  WEBHOOK_RETRY_WORKER_CONCURRENCY,
+  ACCOUNTING_RETRY_WORKER_CONCURRENCY,
+  ACCOUNTING_TOKEN_REFRESH_WORKER_CONCURRENCY,
+  PROVIDER_BALANCE_ALERT_WORKER_CONCURRENCY,
 } = env;

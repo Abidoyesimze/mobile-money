@@ -25,6 +25,8 @@ import { queryRead, queryWrite } from "../config/database";
 import subscriptionModel from "../models/subscription";
 import logger from "../utils/logger";
 
+import { getWorkerConcurrency } from "./config";
+
 const transactionModel = new TransactionModel();
 const mobileMoneyService = new MobileMoneyService();
 const stellarService = new StellarService();
@@ -33,10 +35,7 @@ const emailService = new EmailService();
 const pushService = pushNotificationService;
 const webhookService = new WebhookService();
 
-const CONCURRENCY = Math.max(
-  1,
-  parseInt(process.env.TRANSACTION_WORKER_CONCURRENCY || "5", 10),
-);
+const CONCURRENCY = getWorkerConcurrency();
 
 export async function handleSubscriptionFailure(
   subscriptionId: string,
@@ -258,6 +257,25 @@ async function processTransaction(
         transactionId,
         error: "Request originated from a blacklisted IP address",
       };
+    }
+  }
+  // ── Race condition guard / Atomic transaction claim ────────────────────────
+  // Atomically claim the transaction for processing so duplicate/parallel worker instances
+  // do not execute payments or side-effects twice for the same transaction.
+  if (typeof transactionModel.claimForProcessing === "function") {
+    const claimed = await transactionModel.claimForProcessing(transactionId);
+    if (!claimed) {
+      const existing = await transactionModel.findById(transactionId);
+      if (existing && existing.status !== TransactionStatus.Pending) {
+        logger.warn(
+          { transactionId, status: existing.status },
+          `[Worker] Transaction already claimed/processed (${existing.status}). Skipping duplicate processing.`,
+        );
+        return {
+          success: existing.status === TransactionStatus.Completed,
+          transactionId,
+        };
+      }
     }
   }
   // ───────────────────────────────────────────────────────────────────────────
