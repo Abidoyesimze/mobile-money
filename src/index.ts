@@ -72,6 +72,7 @@ import { developerDashboardRoutes } from "./routes/developerDashboard";
 import { travelRuleRoutes } from "./routes/travelRule";
 import mtnCallbacksRouter from "./routes/mtnCallbacks";
 import orangeMadagascarCallbacksRouter from "./routes/orangeMadagascarCallbacks";
+import multisigCallbacksRouter from "./routes/multisigCallbacks";
 import sep31Router from "./stellar/sep31";
 import sep24Router from "./stellar/sep24";
 import sep38Router from "./stellar/sep38";
@@ -248,17 +249,22 @@ app.get("/health", (_req: Request, res: Response) => {
 
 app.get("/api/live-rates", async (_req: Request, res: Response) => {
   try {
-    const response = await axios.get("https://open.er-api.com/v6/latest/USD", { timeout: 5000 });
+    const response = await axios.get("https://open.er-api.com/v6/latest/USD", {
+      timeout: 5000,
+    });
     if (response.data && response.data.result === "success") {
       res.json({
         success: true,
         rates: response.data.rates,
-        provider: "live"
+        provider: "live",
       });
       return;
     }
   } catch (error) {
-    logger.warn("[API] Live rates fetch failed, using fallback:", (error as Error).message);
+    logger.warn(
+      "[API] Live rates fetch failed, using fallback:",
+      (error as Error).message,
+    );
   }
 
   // Fallback to our hardcoded rates
@@ -272,9 +278,9 @@ app.get("/api/live-rates", async (_req: Request, res: Response) => {
       GHS: 15,
       TZS: 2600,
       ZMW: 27,
-      RWF: 1320
+      RWF: 1320,
     },
-    provider: "fallback"
+    provider: "fallback",
   });
 });
 
@@ -379,6 +385,7 @@ app.get("/health/lb", async (req: Request, res: Response) => {
   res.status(healthy ? 200 : 503).json(responseData);
 });
 
+app.use("/.well-known/stellar.toml", tomlRouter);
 app.use(express.static(path.join(process.cwd(), "public")));
 app.use(globalTimeout);
 app.use(haltOnTimedout);
@@ -421,6 +428,7 @@ app.use("/api/stats", statsRoutes);
 app.use("/api/contacts", contactsRoutes);
 app.use("/api/mtn", mtnCallbacksRouter);
 app.use("/api/orange-madagascar", orangeMadagascarCallbacksRouter);
+app.use("/api/multisig", multisigCallbacksRouter);
 app.use("/api/reports", reportsRoutes);
 app.use("/api/fees", feesRoutes);
 app.use("/api/users", userRoutes);
@@ -449,7 +457,6 @@ app.use("/sep24", sep24Router);
 app.use("/sep38", sep38Router);
 app.use("/sep12", createSep12Router(pool));
 app.use("/sep30", sep30Routes);
-app.use("/.well-known/stellar.toml", tomlRouter);
 
 // Prometheus Metrics Scraper Endpoint
 app.get("/metrics", async (req: Request, res: Response) => {
