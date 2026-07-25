@@ -95,6 +95,7 @@ import adminAssetRoutes from "./routes/admin/assets";
 import settingsRoutes from "./routes/settings";
 import { statementsRoutes } from "./routes/statements";
 import { paymentLinkRoutes } from "./routes/paymentLinkRoutes.js";
+import { SEP24_INTERACTIVE_HTML } from "./services/sep24InteractivePage.js";
 import providerStatusRouter from "./routes/providerStatus";
 import {
   startHeartbeatService,
@@ -443,6 +444,10 @@ app.use("/api/exchange-rate-buffers", exchangeRateBufferRoutes);
 app.use("/api/admin/assets", adminAssetRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/statements", statementsRoutes);
+app.get("/", (_req: Request, res: Response) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(SEP24_INTERACTIVE_HTML);
+});
 app.use("/", paymentLinkRoutes);
 
 // GDPR
