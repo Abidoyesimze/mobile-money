@@ -36,6 +36,7 @@ import { getConfiguredPaymentAsset } from "../services/stellar/assetService";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { travelRuleService } from "../compliance/travelRule";
 import { createError } from "../middleware/errorHandler";
+import { sep08Service } from "../services/compliance/sep08";
 
 const IDEMPOTENCY_TTL_HOURS = Number(
   process.env.IDEMPOTENCY_KEY_TTL_HOURS || 24,
@@ -475,6 +476,76 @@ async function applyTravelRule(transaction: Transaction): Promise<void> {
   }
 }
 
+/**
+ * Applies SEP-08 regulated asset compliance verification for deposit transactions.
+ * Verifies approval status before ledger submission per SEP-08 specification.
+ * Rejects transactions if verification returns failed status.
+ */
+async function applySEP08Verification(
+  transaction: Transaction,
+): Promise<void> {
+  if (transaction.type !== "deposit") return;
+
+  try {
+    const paymentAsset = getConfiguredPaymentAsset();
+    const verificationResult =
+      await sep08Service.verifyDepositApproval(transaction, paymentAsset.code);
+
+    if (verificationResult.status === "failed") {
+      await transactionModel.updateStatus(transaction.id, TransactionStatus.Failed);
+      await transactionModel.addTags(transaction.id, ["sep08-rejected"]);
+      await transactionModel.updateAdminNotes(
+        transaction.id,
+        `[SEP-08 REJECTED] ${verificationResult.message}`,
+      );
+
+      throw createError(ERROR_CODES.COMPLIANCE_REQUIRED, null, {
+        error: verificationResult.message || "SEP-08 compliance verification failed",
+        code: "SEP08_VERIFICATION_FAILED",
+        details: {
+          transactionId: transaction.id,
+          approvalServer: verificationResult.approvalServer,
+        },
+      });
+    }
+
+    if (verificationResult.status === "pending") {
+      await transactionModel.updateStatus(transaction.id, TransactionStatus.Failed);
+      await transactionModel.addTags(transaction.id, ["sep08-pending"]);
+      await transactionModel.updateAdminNotes(
+        transaction.id,
+        `[SEP-08 PENDING] ${verificationResult.message}`,
+      );
+
+      throw createError(ERROR_CODES.COMPLIANCE_REQUIRED, null, {
+        error: verificationResult.message || "SEP-08 approval pending",
+        code: "SEP08_APPROVAL_PENDING",
+        details: {
+          transactionId: transaction.id,
+          approvalServer: verificationResult.approvalServer,
+        },
+      });
+    }
+
+    // Verification successful - tag transaction and continue
+    await transactionModel.addTags(transaction.id, ["sep08-verified"]);
+    logger.info("[sep08] Verification passed for transaction", {
+      transactionId: transaction.id,
+    });
+  } catch (error) {
+    // If it's already a createError from our verification, re-throw it
+    if (error && typeof error === "object" && "code" in error) {
+      throw error;
+    }
+
+    // Log unexpected errors but don't fail the transaction if SEP-08 is not configured
+    logger.error(
+      `[sep08] verification error for transaction ${transaction.id}:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
 function isUniqueViolation(error: unknown): boolean {
   if (!error || typeof error !== "object") {
     return false;
@@ -660,6 +731,7 @@ async function processTransactionRequest(
             await applyPreDispatchAMLProfile(transaction);
             void monitorTransactionForAML(transaction);
             void applyTravelRule(transaction);
+            await applySEP08Verification(transaction);
 
             const job = await addTransactionJob(
               {
