@@ -644,8 +644,10 @@ export class StellarService {
 
 // Added startEventSubscription to initialize Horizon event subscription
 import { startEventSubscription } from "./escrowEventSubscriber";
+import { initializeContractArchiver } from "./contractArchiver";
 
 // Export function to start event subscription (called from application bootstrap)
 export function initializeEscrowEventProcessing() {
   startEventSubscription();
+  initializeContractArchiver();
 }

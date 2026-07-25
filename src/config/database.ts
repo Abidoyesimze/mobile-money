@@ -21,6 +21,40 @@ const ENABLE_SLOW_QUERY_LOGGING =
   process.env.ENABLE_SLOW_QUERY_LOGGING === "true" ||
   (process.env.NODE_ENV === "development" &&
     process.env.ENABLE_SLOW_QUERY_LOGGING !== "false");
+const PRIMARY_POOL_RECONNECT_DELAY_MS = parseInt(
+  process.env.DB_RECONNECT_DELAY_MS || "1000",
+  10,
+);
+const PRIMARY_POOL_MAX_RETRIES = parseInt(
+  process.env.DB_MAX_RETRIES || "3",
+  10,
+);
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientDatabaseError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+
+  const candidate = error as { code?: string; message?: string };
+  const code = candidate.code?.toUpperCase() ?? "";
+  const message = candidate.message?.toLowerCase() ?? "";
+
+  return (
+    code === "ECONNRESET" ||
+    code === "ECONNREFUSED" ||
+    code === "ETIMEDOUT" ||
+    code === "57P01" ||
+    code === "08006" ||
+    message.includes("connection terminated") ||
+    message.includes("terminated unexpectedly") ||
+    message.includes("connection lost") ||
+    message.includes("disconnect") ||
+    message.includes("timeout") ||
+    message.includes("socket")
+  );
+}
 
 /**
  * Sanitizes a SQL query by removing sensitive data patterns
@@ -138,90 +172,222 @@ class SlowQueryPool extends Pool {
 }
 
 /**
- * Primary connection pool – now routes through PgBouncer for transaction-level pooling
- * This significantly reduces the number of direct connections to Postgres
- * (INSERT, UPDATE, DELETE) and read operations when no replica is available.
+ * Primary connection pool – now routes through PgBouncer for transaction-level pooling.
+ * It also reconnects gracefully after transient disconnects so request handlers can
+ * continue operating once the database becomes available again.
  */
-export const pool = new Pool({
-  connectionString: IS_SANDBOX
-    ? SANDBOX_DATABASE_URL || DATABASE_URL
-    : DATABASE_URL,
-  max: 50,
-  idleTimeoutMillis: 15000,
-  connectionTimeoutMillis: 5000,
-  ssl: productionSsl,
-});
+let primaryPoolQuery: (...args: any[]) => Promise<any>;
+let primaryPoolConnect: () => Promise<PoolClient>;
+let isPrimaryPoolReconnecting = false;
+let primaryPoolReconnectAttempt = 0;
+let primaryPoolReconnectPromise: Promise<void> | null = null;
 
-// Wrap query for slow-query logging while preserving Pool typings.
-const originalPoolQuery = pool.query.bind(pool);
-(pool as Pool & { query: (...args: any[]) => Promise<any> }).query = async (
-  ...args: any[]
-): Promise<any> => {
-  const queryConfig = args[0];
-  const values = args[1];
-  const startTime = process.hrtime.bigint();
-  const queryString =
-    typeof queryConfig === "string" ? queryConfig : (queryConfig?.text ?? "");
-  const queryParams =
-    typeof queryConfig === "string" ? values : queryConfig?.values;
+function attachPrimaryPoolRecovery(poolInstance: Pool): void {
+  const originalQuery = poolInstance.query.bind(poolInstance);
+  const originalConnect = poolInstance.connect.bind(poolInstance);
 
-  try {
-    const result = await (
-      originalPoolQuery as (...callArgs: any[]) => Promise<any>
-    )(...args);
-    const endTime = process.hrtime.bigint();
-    const durationMs = Number(endTime - startTime) / 1e6;
-    if (durationMs > SLOW_QUERY_THRESHOLD_MS) {
-      logSlowQuery(queryString, durationMs, queryParams);
-    }
+  primaryPoolQuery = originalQuery;
+  primaryPoolConnect = originalConnect;
 
-    // PII Audit Interceptor
-    if (
-      queryString.toUpperCase().includes("FROM USERS") ||
-      queryString.toUpperCase().includes("UPDATE USERS")
-    ) {
-      const isSelect = queryString.toUpperCase().startsWith("SELECT");
-      const isUpdate = queryString.toUpperCase().startsWith("UPDATE");
+  const wrappedPool = poolInstance as Pool & {
+    query: (...args: any[]) => Promise<any>;
+    connect: () => Promise<PoolClient>;
+  };
 
-      if (isSelect || isUpdate) {
-        // Attempt to extract targetId from query or params
-        let targetId = "unknown";
-        if (queryParams && queryParams.length > 0) {
-          // Typically the first or last param in findById or UPDATE ... WHERE id = $X
-          targetId = queryParams[queryParams.length - 1];
-        }
+  wrappedPool.query = async (...args: any[]): Promise<any> => {
+    const queryConfig = args[0];
+    const values = args[1];
+    const startTime = process.hrtime.bigint();
+    const queryString =
+      typeof queryConfig === "string" ? queryConfig : (queryConfig?.text ?? "");
+    const queryParams =
+      typeof queryConfig === "string" ? values : queryConfig?.values;
 
-        // Trigger asynchronous audit logging
-        // Note: Real admin context would be passed here in a production environment via AsyncLocalStorage or similar.
-        // For this task, we log the access attempt to ensure visibility.
-        setImmediate(() => {
-          auditService
-            .logPIIAccess({
-              adminId: "system-admin", // Placeholder for actual admin context extraction
-              targetId: String(targetId),
-              resource: "users",
-              metadata: {
-                query: sanitizeQuery(queryString),
-                isUpdate,
-              },
-            })
-            .catch((err) =>
-              logger.error("[PII Audit Interceptor] Failed:", err),
-            );
-        });
+    try {
+      const result = await executeWithRetry(
+        () => primaryPoolQuery(...args),
+        "query",
+      );
+      const endTime = process.hrtime.bigint();
+      const durationMs = Number(endTime - startTime) / 1e6;
+      if (durationMs > SLOW_QUERY_THRESHOLD_MS) {
+        logSlowQuery(queryString, durationMs, queryParams);
       }
-    }
 
-    return result;
-  } catch (error) {
-    const endTime = process.hrtime.bigint();
-    const durationMs = Number(endTime - startTime) / 1e6;
-    if (durationMs > SLOW_QUERY_THRESHOLD_MS) {
-      logSlowQuery(queryString, durationMs, queryParams);
+      if (
+        queryString.toUpperCase().includes("FROM USERS") ||
+        queryString.toUpperCase().includes("UPDATE USERS")
+      ) {
+        const isSelect = queryString.toUpperCase().startsWith("SELECT");
+        const isUpdate = queryString.toUpperCase().startsWith("UPDATE");
+
+        if (isSelect || isUpdate) {
+          let targetId = "unknown";
+          if (queryParams && queryParams.length > 0) {
+            targetId = queryParams[queryParams.length - 1];
+          }
+
+          setImmediate(() => {
+            auditService
+              .logPIIAccess({
+                adminId: "system-admin",
+                targetId: String(targetId),
+                resource: "users",
+                metadata: {
+                  query: sanitizeQuery(queryString),
+                  isUpdate,
+                },
+              })
+              .catch((err) =>
+                logger.error("[PII Audit Interceptor] Failed:", err),
+              );
+          });
+        }
+      }
+
+      return result;
+    } catch (error) {
+      const endTime = process.hrtime.bigint();
+      const durationMs = Number(endTime - startTime) / 1e6;
+      if (durationMs > SLOW_QUERY_THRESHOLD_MS) {
+        logSlowQuery(queryString, durationMs, queryParams);
+      }
+      throw error;
     }
-    throw error;
+  };
+
+  wrappedPool.connect = async (): Promise<PoolClient> => {
+    return executeWithRetry(() => primaryPoolConnect(), "connect");
+  };
+}
+
+async function verifyPrimaryPoolHealth(): Promise<void> {
+  if (!primaryPoolQuery) return;
+  await primaryPoolQuery("SELECT 1");
+}
+
+async function ensurePrimaryPoolReady(): Promise<void> {
+  if (!primaryPoolReconnectPromise) return;
+  await primaryPoolReconnectPromise;
+}
+
+async function executeWithRetry<T>(
+  operation: () => Promise<T>,
+  operationName: string,
+): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < PRIMARY_POOL_MAX_RETRIES; attempt += 1) {
+    try {
+      if (isPrimaryPoolReconnecting) {
+        await delay(PRIMARY_POOL_RECONNECT_DELAY_MS);
+        await verifyPrimaryPoolHealth();
+      }
+
+      return await operation();
+    } catch (error) {
+      lastError = error;
+
+      if (!isTransientDatabaseError(error) || attempt === PRIMARY_POOL_MAX_RETRIES - 1) {
+        throw error;
+      }
+
+      logger.warn(
+        `[Database] ${operationName} failed, retrying in ${PRIMARY_POOL_RECONNECT_DELAY_MS}ms`,
+        error,
+      );
+      schedulePrimaryPoolReconnect(error);
+      await delay(PRIMARY_POOL_RECONNECT_DELAY_MS);
+      await ensurePrimaryPoolReady();
+      await verifyPrimaryPoolHealth();
+    }
   }
-};
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function schedulePrimaryPoolReconnect(error: unknown): void {
+  if (primaryPoolReconnectPromise) return;
+
+  isPrimaryPoolReconnecting = true;
+  primaryPoolReconnectAttempt += 1;
+  const reconnectDelayMs = Math.min(
+    5000,
+    PRIMARY_POOL_RECONNECT_DELAY_MS * primaryPoolReconnectAttempt,
+  );
+
+  logger.warn(
+    `[Database] Primary pool disconnected, attempting reconnect in ${reconnectDelayMs}ms`,
+    error,
+  );
+
+  primaryPoolReconnectPromise = new Promise((resolve) => {
+    setTimeout(() => {
+      void reconnectPrimaryPool().finally(() => {
+        primaryPoolReconnectPromise = null;
+        isPrimaryPoolReconnecting = false;
+        resolve();
+      });
+    }, reconnectDelayMs);
+  });
+}
+
+async function reconnectPrimaryPool(): Promise<void> {
+  try {
+    const previousPool = pool;
+    const nextPool = new Pool({
+      connectionString: IS_SANDBOX
+        ? SANDBOX_DATABASE_URL || DATABASE_URL
+        : DATABASE_URL,
+      max: 50,
+      idleTimeoutMillis: 15000,
+      connectionTimeoutMillis: 5000,
+      ssl: productionSsl,
+    });
+
+    nextPool.on("error", (err) => {
+      logger.error("[Database] Primary pool error", err);
+      schedulePrimaryPoolReconnect(err);
+    });
+
+    attachPrimaryPoolRecovery(nextPool);
+    await verifyPrimaryPoolHealth();
+
+    pool = nextPool;
+    await previousPool.end();
+    primaryPoolReconnectAttempt = 0;
+    logger.info("[Database] Primary pool reconnected successfully");
+  } catch (error) {
+    logger.error("[Database] Primary pool reconnect failed", error);
+    setTimeout(() => {
+      void reconnectPrimaryPool();
+    }, PRIMARY_POOL_RECONNECT_DELAY_MS * 2);
+  } finally {
+    isPrimaryPoolReconnecting = false;
+  }
+}
+
+function createPrimaryPool(): Pool {
+  const newPool = new Pool({
+    connectionString: IS_SANDBOX
+      ? SANDBOX_DATABASE_URL || DATABASE_URL
+      : DATABASE_URL,
+    max: 50,
+    idleTimeoutMillis: 15000,
+    connectionTimeoutMillis: 5000,
+    ssl: productionSsl,
+  });
+
+  newPool.on("error", (err) => {
+    logger.error("[Database] Primary pool error", err);
+    schedulePrimaryPoolReconnect(err);
+  });
+
+  attachPrimaryPoolRecovery(newPool);
+  return newPool;
+}
+
+export let pool: Pool = createPrimaryPool();
 
 /**
  * Read replica connection pool – handles SELECT queries to take load off the
