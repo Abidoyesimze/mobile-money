@@ -4,6 +4,16 @@ import { sep12RateLimiter } from "../middleware/rateLimit";
 import { upload } from "../middleware/upload";
 import { z } from "zod";
 import KYCService, { KYCLevel, KYCStatus, DocumentType } from "../services/kyc";
+import { validateCountryCode } from "../utils/validators";
+
+// Zod refinement: accepts ISO 3166-1 alpha-2 OR alpha-3, validated against
+// the expanded country map from validators.ts (issue #1579)
+const isoCountryCode = z
+  .string()
+  .refine(
+    (val) => validateCountryCode(val).valid,
+    (val) => ({ message: `"${val}" is not a recognised ISO 3166-1 alpha-2 or alpha-3 country code` }),
+  );
 
 /**
  * SEP-12: KYC API
@@ -102,14 +112,14 @@ const PutCustomerSchema = z.object({
   
   // Address
   address: z.string().optional(),
-  address_country_code: z.string().length(3).optional(),
+  address_country_code: isoCountryCode.optional(),
   state_or_province: z.string().optional(),
   city: z.string().optional(),
   postal_code: z.string().optional(),
   
   // ID document
   id_type: z.string().optional(),
-  id_country_code: z.string().length(3).optional(),
+  id_country_code: isoCountryCode.optional(),
   id_issue_date: z.string().optional(),
   id_expiration_date: z.string().optional(),
   id_number: z.string().optional(),

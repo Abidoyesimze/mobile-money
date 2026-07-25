@@ -1,6 +1,7 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from "axios";
 import * as fs from "fs";
 import * as path from "path";
+import { BaseProvider } from "../../providers/baseProvider";
 
 type OrangeOperation = "payment" | "payout";
 type OrangeMode = "web" | "direct" | "proxy";
@@ -69,7 +70,37 @@ export type OrangeProviderOptions = Partial<OrangeProviderConfig> & {
 const DEFAULT_SESSION_TTL_MS = 20 * 60 * 1000;
 const DEFAULT_REFRESH_SKEW_MS = 60 * 1000;
 
-export class OrangeProvider {
+/**
+ * Minimal config extraction used only to satisfy the BaseProvider super()
+ * call before the full config is built. Keeps the constructor clean.
+ */
+function buildTempConfig(options: OrangeProviderOptions): {
+  apiKey: string;
+  apiSecret: string;
+  directBaseUrl: string;
+  requestTimeoutMs: number;
+} {
+  return {
+    apiKey:
+      options.apiKey ??
+      process.env.ORANGE_API_KEY ??
+      "",
+    apiSecret:
+      options.apiSecret ??
+      process.env.ORANGE_API_SECRET ??
+      "",
+    directBaseUrl:
+      options.directBaseUrl ??
+      options.baseUrl ??
+      process.env.ORANGE_BASE_URL ??
+      "https://sandbox.orange.com",
+    requestTimeoutMs: Number(
+      options.requestTimeoutMs ?? process.env.REQUEST_TIMEOUT_MS ?? 30000,
+    ),
+  };
+}
+
+export class OrangeProvider extends BaseProvider {
   private readonly config: OrangeProviderConfig;
   private readonly mode: OrangeMode;
   private readonly client: OrangeHttpClient;
@@ -82,6 +113,13 @@ export class OrangeProvider {
   private apiTokenExpiry = 0;
 
   constructor(options: OrangeProviderOptions = {}) {
+    const cfg = buildTempConfig(options);
+    super({
+      apiKey:    cfg.apiKey,
+      apiSecret: cfg.apiSecret,
+      baseUrl:   cfg.directBaseUrl,
+      timeoutMs: cfg.requestTimeoutMs,
+    });
     this.clock = options.clock ?? Date.now;
     this.config = this.buildConfig(options);
     this.mode = this.resolveMode();
@@ -428,7 +466,7 @@ export class OrangeProvider {
           ...request,
           headers: {
             ...requestHeaders,
-            Authorization: `Bearer ${token}`,
+            Authorization: this.buildBearerAuthHeader(token),
             "Content-Type": requestHeaders["Content-Type"] ?? "application/json",
           },
         });
@@ -462,6 +500,16 @@ export class OrangeProvider {
     throw lastError ?? new Error("Orange direct API request failed");
   }
 
+  /**
+   * Implement the abstract hook from BaseProvider.
+   * For Orange direct mode this delegates to authenticateDirect().
+   * Web and proxy modes manage their own session / secret auth and do not
+   * use this token path.
+   */
+  async getAccessToken(): Promise<string> {
+    return this.authenticateDirect();
+  }
+
   private async authenticateDirect(): Promise<string> {
     if (this.apiToken && this.clock() < this.apiTokenExpiry) {
       return this.apiToken;
@@ -471,11 +519,11 @@ export class OrangeProvider {
       this.assertDirectConfig();
     }
 
-    const authHeader =
-      "Basic " +
-      Buffer.from(`${this.config.apiKey}:${this.config.apiSecret}`).toString(
-        "base64",
-      );
+    // Use buildBasicAuthHeader inherited from BaseProvider
+    const authHeader = this.buildBasicAuthHeader(
+      this.config.apiKey,
+      this.config.apiSecret,
+    );
     const response = await this.sendRequest(this.directClient, {
       method: "POST",
       url: this.config.directAuthPath,
