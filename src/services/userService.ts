@@ -436,3 +436,42 @@ export async function invalidateUserOnPasswordChange(
   // 3. Flush Redis express-sessions and flag active stateless JWTs
   await flushUserSessions(userId);
 }
+
+export interface GdprExportData {
+  profile: Partial<User>;
+  billing: any[];
+  logs: any[];
+  exportedAt: string;
+}
+
+/**
+ * Aggregates all data associated with a user profile for GDPR export,
+ * cleaning out internal metadata and sensitive secrets.
+ */
+export async function exportUserData(userId: string): Promise<GdprExportData> {
+  const user = await getUserById(userId);
+  if (!user) {
+    throw new Error(`User with ID ${userId} not found`);
+  }
+
+  // Strip sensitive secrets/metadata
+  const { two_factor_secret, backup_codes, ...sanitizedProfile } = user;
+
+  // Fetch billing records and application/activity logs
+  const billingRes = await pool.query(
+    `SELECT id, amount, currency, status, created_at FROM billing_records WHERE user_id = $1`,
+    [userId]
+  );
+
+  const logsRes = await pool.query(
+    `SELECT id, action, details, created_at FROM audit_logs WHERE user_id = $1`,
+    [userId]
+  );
+
+  return {
+    profile: sanitizedProfile,
+    billing: billingRes.rows || [],
+    logs: logsRes.rows || [],
+    exportedAt: new Date().toISOString(),
+  };
+}
