@@ -134,6 +134,15 @@ jest.mock("../graphql/server", () => ({
   startApolloServer: jest.fn<any>().mockResolvedValue(undefined),
 }));
 
+// Mock disputeStateMachine to prevent the background SLA check worker from running during tests
+jest.mock("../services/disputeStateMachine", () => ({
+  DisputeStateMachine: jest.fn().mockImplementation(() => ({
+    isValidTransition: jest.fn().mockReturnValue(true),
+  })),
+  checkSlaDeadlines: jest.fn().mockResolvedValue(undefined),
+  startSlaCheckWorker: jest.fn(),
+}));
+
 // Mock bullmq to avoid queue listener initialization during tests
 jest.mock("bullmq", () => ({
   Queue: jest.fn<any>().mockImplementation(() => ({
