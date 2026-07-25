@@ -292,7 +292,6 @@ export class WebSocketManager {
     this.broadcastLocally(payload.id, message);
   }
 
-
   private async sendTransactionDetails(
     client: AuthenticatedWebSocket,
     transactionId: string,
@@ -316,7 +315,7 @@ export class WebSocketManager {
         data: {
           transactionId,
           transaction,
-        } as TransactionDetailsResponsePayload,
+        } satisfies TransactionDetailsResponsePayload,
       };
 
       this.sendToClient(client, response);
@@ -328,6 +327,7 @@ export class WebSocketManager {
       });
     }
   }
+
   /** Send a message to all locally-connected clients subscribed to transactionId. */
   private broadcastLocally(
     transactionId: string,
