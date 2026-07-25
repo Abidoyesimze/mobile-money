@@ -47,6 +47,7 @@ import {
   ComplianceDocumentUpdateInput,
 } from "../models/complianceDocument";
 import { providerSettingsService } from "../services/providerSettingsService";
+import { ProviderConfigCacheInvalidation } from "../services/cacheAside";
 import { resetCircuitBreakerForProvider } from "../utils/circuitBreaker";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { createError } from "../middleware/errorHandler";
@@ -3000,9 +3001,20 @@ router.put(
         fallback_order || null,
       );
 
+      // 1. Reset the circuit breaker so the new settings take effect immediately.
       resetCircuitBreakerForProvider(providerName);
 
-      res.json({ message: "Provider settings updated successfully", settings });
+      // 2. Invalidate all caches that reference this provider's config across
+      //    every cluster instance (L1 + Redis L2 + Pub/Sub broadcast).
+      await ProviderConfigCacheInvalidation.invalidateOnConfigModification(
+        providerName,
+      );
+
+      res.json({
+        message: "Provider settings updated successfully",
+        settings,
+        invalidatedAt: new Date().toISOString(),
+      });
     } catch (error) {
       logger.error("Error updating provider settings:", error);
       res.status(500).json({ message: "Failed to update provider settings" });
