@@ -130,6 +130,10 @@ body {
   animation: pulse-dot-green 2s infinite;
 }
 
+.status-text.online {
+  color: hsl(var(--success));
+}
+
 .status-dot.offline {
   background-color: 0 84% 60%;
   animation: pulse-dot-red 2s infinite;

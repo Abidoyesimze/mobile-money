@@ -32,19 +32,22 @@ async function updateSystemStatus() {
   const text = document.getElementById("status-text");
 
   try {
-    const res = await fetch("/ready");
+    const res = await fetch("/health");
     if (res.ok) {
       const data = await res.json();
-      if (data.status === "ready") {
+      if (data.status === "ok") {
         dot.className = "status-dot online";
+        text.className = "status-text online";
         text.textContent = "System: Operational";
         return;
       }
     }
     dot.className = "status-dot offline";
+    text.className = "status-text";
     text.textContent = "System: Issues Detected";
   } catch (error) {
     dot.className = "status-dot offline";
+    text.className = "status-text";
     text.textContent = "System: Offline";
   }
 }
