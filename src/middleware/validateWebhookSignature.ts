@@ -28,6 +28,12 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     primaryHeader: "x-callback-signature",
     altHeader: "x-orange-signature",
   },
+  orangeGuinea: {
+    name: "orangeGuinea",
+    secretKey: "providers.orangeGuinea.callbackSecret",
+    primaryHeader: "x-callback-signature",
+    altHeader: "x-orange-signature",
+  },
 };
 
 function getSecret(provider: string): string {
