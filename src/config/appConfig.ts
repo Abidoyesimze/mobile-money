@@ -79,6 +79,12 @@ export const configSchema = convict({
         default: "",
         env: "MTN_CALLBACK_SECRET",
       },
+      allowedIps: {
+        doc: "Comma-separated list of allowed CIDR blocks for MTN callbacks",
+        format: String,
+        default: "",
+        env: "MTN_ALLOWED_IPS",
+      },
       callbackSignatureHeader: {
         doc: "Header used by MTN for callback signature verification",
         format: String,
@@ -98,6 +104,12 @@ export const configSchema = convict({
         format: "nat",
         default: 1000000,
         env: "AIRTEL_MAX_AMOUNT",
+      },
+      allowedIps: {
+        doc: "Comma-separated list of allowed CIDR blocks for Airtel callbacks",
+        format: String,
+        default: "",
+        env: "AIRTEL_ALLOWED_IPS",
       },
       webBaseUrl: {
         doc: "Airtel web base URL (session mode)",
@@ -131,6 +143,12 @@ export const configSchema = convict({
         default: 750000,
         env: "ORANGE_MAX_AMOUNT",
       },
+      allowedIps: {
+        doc: "Comma-separated list of allowed CIDR blocks for Orange callbacks",
+        format: String,
+        default: "",
+        env: "ORANGE_ALLOWED_IPS",
+      },
     },
     orangeMadagascar: {
       minAmount: {
@@ -145,6 +163,12 @@ export const configSchema = convict({
         default: 5000000,
         env: "ORANGE_MADAGASCAR_MAX_AMOUNT",
       },
+      allowedIps: {
+        doc: "Comma-separated list of allowed CIDR blocks for Orange Madagascar callbacks",
+        format: String,
+        default: "",
+        env: "ORANGE_MADAGASCAR_ALLOWED_IPS",
+      },
       callbackSecret: {
         doc: "Orange Madagascar callback HMAC secret for verifying incoming callbacks",
         format: String,
@@ -156,6 +180,32 @@ export const configSchema = convict({
         format: String,
         default: "X-Callback-Signature",
         env: "ORANGE_MADAGASCAR_CALLBACK_SIGNATURE_HEADER",
+      },
+    },
+    orangeGuinea: {
+      minAmount: {
+        doc: "Minimum transaction amount for Orange Guinea (GNF)",
+        format: "nat",
+        default: 100,
+        env: "ORANGE_GUINEA_MIN_AMOUNT",
+      },
+      maxAmount: {
+        doc: "Maximum transaction amount for Orange Guinea (GNF)",
+        format: "nat",
+        default: 5000000,
+        env: "ORANGE_GUINEA_MAX_AMOUNT",
+      },
+      callbackSecret: {
+        doc: "Orange Guinea callback HMAC secret for verifying incoming callbacks",
+        format: String,
+        default: "",
+        env: "ORANGE_GUINEA_CALLBACK_SECRET",
+      },
+      callbackSignatureHeader: {
+        doc: "Header used by Orange Guinea for callback signature verification",
+        format: String,
+        default: "X-Callback-Signature",
+        env: "ORANGE_GUINEA_CALLBACK_SIGNATURE_HEADER",
       },
     },
     smsPortal: {
@@ -439,6 +489,16 @@ export const configSchema = convict({
       format: "nat",
       default: 6,
       env: "COMPRESSION_LEVEL",
+    },
+  },
+
+  // Cross-origin request settings
+  cors: {
+    allowedOrigins: {
+      doc: "List of allowed CORS origins loaded from config files",
+      format: Array,
+      default: ["http://localhost:3000"],
+      env: "CORS_ALLOWED_ORIGINS",
     },
   },
 });

@@ -35,7 +35,7 @@ describe("SanctionSyncJob", () => {
     jest.spyOn(console, "error").mockImplementation(() => {});
 
     mockClient = {
-      query: jest.fn<any>().mockResolvedValue({}),
+      query: jest.fn<any>().mockResolvedValue({ rows: [] }),
       release: jest.fn<any>(),
     };
     (mockedPool.connect as any).mockResolvedValue(mockClient);

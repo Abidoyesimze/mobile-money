@@ -26,6 +26,13 @@ export interface EmailOptions {
   }>;
 }
 
+export interface LowBalanceAlert {
+  provider: string;
+  availableBalance: number;
+  currency: string;
+  threshold: number;
+}
+
 export interface VulnerabilityReport {
   total: number;
   critical: number;
@@ -175,6 +182,84 @@ export class EmailService {
       }
     } catch (error) {
       logger.error("[Email] Lockout notification delivery failed:", error);
+    }
+  }
+
+  async sendAdminBalanceAlert(
+    email: string,
+    alerts: LowBalanceAlert[],
+  ): Promise<void> {
+    if (process.env.NODE_ENV === "test") {
+      console.log("Skipping balance alert email in test environment");
+      return;
+    }
+
+    const templateId = process.env.SENDGRID_BALANCE_ALERT_TEMPLATE_ID;
+    const from =
+      process.env.EMAIL_FROM || '"Mobile Money" <no-reply@mobilemoney.com>';
+    const generatedAt = new Date().toLocaleString();
+
+    try {
+      if (templateId) {
+        await sgMail.send({
+          from,
+          to: email,
+          templateId,
+          dynamicTemplateData: {
+            alerts,
+            generatedAt,
+            year: new Date().getFullYear(),
+          },
+        });
+      } else {
+        // Inline HTML fallback — no template required in SendGrid.
+        const rows = alerts
+          .map(
+            (alert) =>
+              `<tr>
+                <td style="padding:6px 8px;border-bottom:1px solid #eee;">${alert.provider.toUpperCase()}</td>
+                <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;">${alert.availableBalance.toFixed(2)} ${alert.currency}</td>
+                <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;">${alert.threshold.toFixed(2)} ${alert.currency}</td>
+              </tr>`,
+          )
+          .join("");
+
+        await sgMail.send({
+          from,
+          to: email,
+          subject: `Low settlement balance alert: ${alerts.map((alert) => alert.provider.toUpperCase()).join(", ")}`,
+          html: `
+            <div style="font-family:sans-serif;max-width:560px;margin:0 auto">
+              <h2 style="color:#c0392b">Low Settlement Balance Alert</h2>
+              <p>The following provider settlement account(s) have dropped below their configured minimum threshold:</p>
+              <table style="width:100%;border-collapse:collapse;">
+                <tr style="text-align:left;">
+                  <th style="padding:6px 8px;border-bottom:2px solid #c0392b;">Provider</th>
+                  <th style="padding:6px 8px;border-bottom:2px solid #c0392b;text-align:right;">Balance</th>
+                  <th style="padding:6px 8px;border-bottom:2px solid #c0392b;text-align:right;">Threshold</th>
+                </tr>
+                ${rows}
+              </table>
+              <p style="color:#666;font-size:13px;">Generated at: ${generatedAt}</p>
+              <hr style="border:none;border-top:1px solid #eee;margin:24px 0">
+              <p style="color:#999;font-size:12px">
+                &copy; ${new Date().getFullYear()} Mobile Money. This is an automated treasury notification.
+              </p>
+            </div>
+          `,
+          text:
+            `Low Settlement Balance Alert\n\n` +
+            alerts
+              .map(
+                (alert) =>
+                  `${alert.provider.toUpperCase()}: ${alert.availableBalance.toFixed(2)} ${alert.currency} (threshold: ${alert.threshold.toFixed(2)} ${alert.currency})`,
+              )
+              .join("\n") +
+            `\n\nGenerated at: ${generatedAt}`,
+        });
+      }
+    } catch (error) {
+      logger.error("[Email] Balance alert delivery failed:", error);
     }
   }
 

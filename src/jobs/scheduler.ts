@@ -25,6 +25,7 @@ import { runDatabaseBackupVerifyJob } from "./databaseBackupVerifyJob";
 import { INDEX_REINDEX_CRON, INDEX_REINDEX_JOB_ENABLED } from "../config/env";
 import { runIndexReindexJob } from "./indexReindexJob";
 import { runSanctionSyncJob } from "./sanctionSyncJob";
+import { runJwtKeyRotationJob } from "./jwtKeyRotationJob";
 import { startNotificationWorker } from "../workers/notificationWorker";
 
 interface JobConfig {
@@ -164,6 +165,13 @@ const JOBS: JobConfig[] = [
     // Daily at 3:00 AM
     schedule: process.env.DATABASE_BACKUP_VERIFY_CRON || "0 3 * * *",
     handler: runDatabaseBackupVerifyJob,
+  },
+  {
+    name: "jwt-key-rotation",
+    // Monthly on the 1st at 3:00 AM — rotates JWT signing key,
+    // old keys remain valid for 24-hour grace period
+    schedule: process.env.JWT_KEY_ROTATION_CRON || "0 3 1 * *",
+    handler: runJwtKeyRotationJob,
   },
   {
     name: "sanction-sync",
