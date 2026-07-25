@@ -11,7 +11,6 @@ import dotenv from "dotenv";
 import helmet from "helmet";
 import axios from "axios";
 import * as Sentry from "@sentry/node";
-import { register } from "prom-client";
 import http2 from "http2";
 import fs from "fs";
 import session from "express-session";
@@ -74,6 +73,7 @@ import { travelRuleRoutes } from "./routes/travelRule";
 import mtnCallbacksRouter from "./routes/mtnCallbacks";
 import orangeMadagascarCallbacksRouter from "./routes/orangeMadagascarCallbacks";
 import multisigCallbacksRouter from "./routes/multisigCallbacks";
+import { createMetricsRouter } from "./routes/metrics";
 import sep31Router from "./stellar/sep31";
 import sep24Router from "./stellar/sep24";
 import sep38Router from "./stellar/sep38";
@@ -95,6 +95,7 @@ import adminAssetRoutes from "./routes/admin/assets";
 import settingsRoutes from "./routes/settings";
 import { statementsRoutes } from "./routes/statements";
 import { paymentLinkRoutes } from "./routes/paymentLinkRoutes.js";
+import { SEP24_INTERACTIVE_HTML } from "./services/sep24InteractivePage.js";
 import providerStatusRouter from "./routes/providerStatus";
 import {
   startHeartbeatService,
@@ -443,6 +444,10 @@ app.use("/api/exchange-rate-buffers", exchangeRateBufferRoutes);
 app.use("/api/admin/assets", adminAssetRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/statements", statementsRoutes);
+app.get("/", (_req: Request, res: Response) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(SEP24_INTERACTIVE_HTML);
+});
 app.use("/", paymentLinkRoutes);
 
 // GDPR
@@ -461,14 +466,7 @@ app.use("/sep12", createSep12Router(pool));
 app.use("/sep30", sep30Routes);
 
 // Prometheus Metrics Scraper Endpoint
-app.get("/metrics", async (req: Request, res: Response) => {
-  try {
-    res.set("Content-Type", register.contentType);
-    res.end(await register.metrics());
-  } catch (ex) {
-    res.status(500).end(String(ex));
-  }
-});
+app.use("/metrics", createMetricsRouter());
 
 app.use(
   (

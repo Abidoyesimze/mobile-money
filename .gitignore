@@ -37,7 +37,9 @@ pact.log
 # Kiro
 .kiro/
 
-
+# Playwright
+playwright-report/
+test-results/
 
 # Load test output
 tests/load/results/*.json
