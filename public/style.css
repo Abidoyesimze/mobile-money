@@ -34,6 +34,7 @@
 
 html {
   scroll-behavior: smooth;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 body {
@@ -127,6 +128,10 @@ body {
   background-color: hsl(var(--success));
   box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
   animation: pulse-dot-green 2s infinite;
+}
+
+.status-text.online {
+  color: hsl(var(--success));
 }
 
 .status-dot.offline {
@@ -735,6 +740,133 @@ body {
 
 .step-item p a:hover {
   text-decoration: underline;
+}
+
+/* Theme Switcher */
+.theme-switcher {
+  display: flex;
+  gap: 2px;
+  background-color: rgba(255, 255, 255, 0.04);
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.theme-switcher button {
+  background: transparent;
+  border: none;
+  color: hsl(var(--text-muted));
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.theme-switcher button:hover {
+  color: hsl(var(--text-primary));
+}
+
+.theme-switcher button.active {
+  background-color: hsl(var(--primary));
+  color: hsl(var(--bg-dark));
+}
+
+/* Theme Overrides */
+html[data-theme="light"] {
+  --bg-dark: 0 0% 98%;
+  --bg-card: 0 0% 100%;
+  --bg-card-hover: 0 0% 96%;
+  --text-primary: 240 10% 8%;
+  --text-secondary: 240 5% 35%;
+  --text-muted: 240 5% 50%;
+  --border: 240 6% 85%;
+  --border-glow: 180 100% 35% / 0.1;
+}
+
+html[data-theme="dark"] {
+  --bg-dark: 0 0% 3%;
+  --bg-card: 0 0% 6%;
+  --bg-card-hover: 0 0% 10%;
+  --text-primary: 0 0% 100%;
+  --text-secondary: 0 0% 60%;
+  --text-muted: 0 0% 40%;
+  --border: 0 0% 12%;
+  --border-glow: 180 100% 35% / 0.2;
+}
+
+/* Light Theme — Semantic Element Overrides */
+html[data-theme="light"] .app-header {
+  background-color: rgba(255, 255, 255, 0.85);
+  border-bottom-color: hsl(var(--border));
+}
+
+html[data-theme="light"] .glass {
+  background: rgba(255, 255, 255, 0.75);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+html[data-theme="light"] .step-item:hover {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+html[data-theme="light"] .app-footer {
+  background-color: #f5f5f5;
+}
+
+html[data-theme="light"] .input-wrapper {
+  background-color: rgba(0, 0, 0, 0.04);
+}
+
+html[data-theme="light"] .input-wrapper select {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+html[data-theme="light"] .calc-details {
+  background-color: rgba(0, 0, 0, 0.03);
+}
+
+html[data-theme="light"] .api-tabs {
+  background-color: rgba(0, 0, 0, 0.03);
+}
+
+html[data-theme="light"] .api-code-container {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+html[data-theme="light"] .code-header {
+  background-color: rgba(0, 0, 0, 0.04);
+}
+
+html[data-theme="light"] .code-block code {
+  color: #1a1a2e;
+}
+
+html[data-theme="light"] .theme-switcher {
+  background-color: rgba(0, 0, 0, 0.04);
+}
+
+html[data-theme="light"] .system-status-badge {
+  background-color: rgba(0, 0, 0, 0.03);
+}
+
+/* Dark Theme — Semantic Element Overrides */
+html[data-theme="dark"] .app-header {
+  background-color: rgba(0, 0, 0, 0.85);
+}
+
+html[data-theme="dark"] .glass {
+  background: rgba(10, 10, 12, 0.7);
+  border-color: rgba(255, 255, 255, 0.04);
+}
+
+html[data-theme="dark"] .app-footer {
+  background-color: #000000;
+}
+
+html[data-theme="dark"] .theme-switcher {
+  background-color: rgba(255, 255, 255, 0.03);
 }
 
 /* Responsive Rules */

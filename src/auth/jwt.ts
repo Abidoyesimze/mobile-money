@@ -2,6 +2,10 @@ import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import { v4 as uuidv4 } from "uuid";
 import { RefreshTokenFamilyModel } from "../models/refreshTokenFamily";
+import {
+  getActiveSigningKey,
+  getVerificationKeys,
+} from "./jwtKeys";
 
 dotenv.config();
 
@@ -21,14 +25,6 @@ export interface JWTImpersonationClaim {
 
 interface GenerateTokenOptions {
   expiresIn?: string | number;
-}
-
-function getJwtSecret(): string {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    throw new Error("JWT_SECRET is not defined in environment variables");
-  }
-  return secret;
 }
 
 export interface JWTPayload {
@@ -59,9 +55,11 @@ export function generateToken(
   payload: Omit<JWTPayload, "iat" | "exp">,
   options?: GenerateTokenOptions,
 ): string {
+  const { key, kid } = getActiveSigningKey();
   const expiresIn = options?.expiresIn ?? JWT_EXPIRES_IN;
-  return jwt.sign(payload, getJwtSecret(), {
+  return jwt.sign(payload, key, {
     expiresIn: typeof expiresIn === "string" ? expiresIn : expiresIn,
+    header: { alg: "HS256", kid },
   } as jwt.SignOptions);
 }
 
@@ -85,9 +83,11 @@ export async function generateRefreshToken(
     tokenId,
     parentTokenId,
   };
-  const token = jwt.sign(payload, getJwtSecret(), {
+  const { key, kid } = getActiveSigningKey();
+  const token = jwt.sign(payload, key, {
     expiresIn: REFRESH_TOKEN_EXPIRES_IN,
-  });
+    header: { alg: "HS256", kid },
+  } as jwt.SignOptions);
   await refreshTokenFamilyModel.create({
     user_id: userId,
     family_id: famId,
@@ -104,21 +104,28 @@ export async function generateRefreshToken(
  * @throws Error if token is invalid or expired
  */
 export function verifyToken(token: string): JWTPayload {
-  const secret = getJwtSecret();
-  try {
-    const decoded = jwt.verify(token, secret, {
-      clockTolerance: 60,
-    }) as JWTPayload;
-    return decoded;
-  } catch (error: unknown) {
-    if (error instanceof jwt.TokenExpiredError) {
-      throw new Error("Token has expired", { cause: error });
-    } else if (error instanceof jwt.JsonWebTokenError) {
-      throw new Error("Invalid token", { cause: error });
-    } else {
-      throw new Error("Token verification failed", { cause: error });
+  const keys = getVerificationKeys();
+  let lastError: unknown;
+  for (const { key } of keys) {
+    try {
+      const decoded = jwt.verify(token, key, {
+        clockTolerance: 60,
+      }) as JWTPayload;
+      return decoded;
+    } catch (error: unknown) {
+      lastError = error;
+      if (error instanceof jwt.TokenExpiredError) {
+        throw new Error("Token has expired", { cause: error });
+      }
     }
   }
+  if (lastError instanceof jwt.TokenExpiredError) {
+    throw new Error("Token has expired", { cause: lastError });
+  }
+  if (lastError instanceof jwt.JsonWebTokenError) {
+    throw new Error("Invalid token", { cause: lastError });
+  }
+  throw new Error("Token verification failed", { cause: lastError });
 }
 
 /**
@@ -130,18 +137,25 @@ export function verifyToken(token: string): JWTPayload {
 export async function verifyRefreshToken(
   token: string,
 ): Promise<RefreshTokenPayload> {
-  const secret = getJwtSecret();
-  let decoded: RefreshTokenPayload;
-  try {
-    decoded = jwt.verify(token, secret) as RefreshTokenPayload;
-  } catch (error: unknown) {
-    if (error instanceof jwt.TokenExpiredError) {
-      throw new Error("Refresh token has expired", { cause: error });
-    } else if (error instanceof jwt.JsonWebTokenError) {
-      throw new Error("Invalid refresh token", { cause: error });
-    } else {
-      throw new Error("Refresh token verification failed", { cause: error });
+  const keys = getVerificationKeys();
+  let decoded: RefreshTokenPayload | null = null;
+  let lastError: unknown;
+  for (const { key } of keys) {
+    try {
+      decoded = jwt.verify(token, key) as RefreshTokenPayload;
+      break;
+    } catch (error: unknown) {
+      lastError = error;
+      if (error instanceof jwt.TokenExpiredError) {
+        throw new Error("Refresh token has expired", { cause: error });
+      }
     }
+  }
+  if (!decoded) {
+    if (lastError instanceof jwt.JsonWebTokenError) {
+      throw new Error("Invalid refresh token", { cause: lastError });
+    }
+    throw new Error("Refresh token verification failed", { cause: lastError });
   }
   // Check for reuse
   const dbToken = await refreshTokenFamilyModel.findByToken(token);
