@@ -11,7 +11,6 @@ import dotenv from "dotenv";
 import helmet from "helmet";
 import axios from "axios";
 import * as Sentry from "@sentry/node";
-import { register } from "prom-client";
 import http2 from "http2";
 import fs from "fs";
 import session from "express-session";
@@ -74,6 +73,7 @@ import { travelRuleRoutes } from "./routes/travelRule";
 import mtnCallbacksRouter from "./routes/mtnCallbacks";
 import orangeMadagascarCallbacksRouter from "./routes/orangeMadagascarCallbacks";
 import multisigCallbacksRouter from "./routes/multisigCallbacks";
+import { createMetricsRouter } from "./routes/metrics";
 import sep31Router from "./stellar/sep31";
 import sep24Router from "./stellar/sep24";
 import sep38Router from "./stellar/sep38";
@@ -466,14 +466,7 @@ app.use("/sep12", createSep12Router(pool));
 app.use("/sep30", sep30Routes);
 
 // Prometheus Metrics Scraper Endpoint
-app.get("/metrics", async (req: Request, res: Response) => {
-  try {
-    res.set("Content-Type", register.contentType);
-    res.end(await register.metrics());
-  } catch (ex) {
-    res.status(500).end(String(ex));
-  }
-});
+app.use("/metrics", createMetricsRouter());
 
 app.use(
   (
