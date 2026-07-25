@@ -15,7 +15,26 @@ import {
 import { createSep10Router, Sep10Service, getSep10Config } from "../sep10";
 import { Networks } from "stellar-sdk";
 import { errorHandler } from "../../middleware/errorHandler";
+import { z } from "zod";
 
+const ChallengeResponseSchema = z.object({
+  transaction: z.string(),
+  network_passphrase: z.string(),
+});
+
+const AuthResponseSchema = z.object({
+  token: z.string(),
+});
+
+const ErrorResponseSchema = z.object({
+  error: z.string(),
+});
+
+const HealthResponseSchema = z.object({
+  status: z.literal("ok"),
+  service: z.string(),
+  server_key: z.string(),
+});
 // Generate keypairs for testing
 const serverKeypair = Keypair.random();
 const clientKeypair = Keypair.random();
@@ -969,7 +988,7 @@ describe("SEP-10 Stellar Authentication", () => {
           .send({ transaction: tx.toXDR() });
 
         expect(response.status).toBe(200);
-        expect(response.body.token).toBeDefined();
+        AuthResponseSchema.parse(response.body);
 
         const decoded = service.verifyToken(response.body.token);
         expect(decoded.sub).toBe(clientKeypair.publicKey());
@@ -979,6 +998,7 @@ describe("SEP-10 Stellar Authentication", () => {
         const response = await request(app).post("/auth").send({});
 
         expect(response.status).toBe(400);
+        ErrorResponseSchema.parse(response.body);
         expect(response.body.error).toContain(
           "transaction parameter is required",
         );
@@ -990,6 +1010,7 @@ describe("SEP-10 Stellar Authentication", () => {
           .send({ transaction: "invalid-xdr" });
 
         expect(response.status).toBe(400);
+        ErrorResponseSchema.parse(response.body);
         expect(response.body.error).toContain("Invalid transaction envelope");
       });
 
@@ -1039,8 +1060,7 @@ describe("SEP-10 Stellar Authentication", () => {
         const response = await request(app).get("/auth/health");
 
         expect(response.status).toBe(200);
-        expect(response.body.status).toBe("ok");
-        expect(response.body.service).toBe("SEP-10 Authentication");
+        HealthResponseSchema.parse(response.body);
         expect(response.body.server_key).toBe(serverKeypair.publicKey());
       });
     });
@@ -1062,7 +1082,7 @@ describe("SEP-10 Stellar Authentication", () => {
         .query({ account: clientKeypair.publicKey() });
 
       expect(challengeRes.status).toBe(200);
-      expect(challengeRes.body.transaction).toBeDefined();
+      ChallengeResponseSchema.parse(challengeRes.body);
       expect(challengeRes.body.network_passphrase).toBe(
         TEST_NETWORK_PASSPHRASE,
       );
@@ -1087,7 +1107,7 @@ describe("SEP-10 Stellar Authentication", () => {
         .send({ transaction: challengeTx.toXDR() });
 
       expect(authRes.status).toBe(200);
-      expect(authRes.body.token).toBeDefined();
+      AuthResponseSchema.parse(authRes.body);
 
       // Step 5: Verify the JWT token
       const decoded = service.verifyToken(authRes.body.token);
