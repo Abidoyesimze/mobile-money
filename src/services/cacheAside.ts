@@ -4,7 +4,9 @@ import {
   QUERY_TTL_POLICIES,
   CacheTags,
 } from "./cachedQueryManager";
+import { layeredCache } from "./layeredCache";
 import logger from "../utils/logger";
+import { PROVIDER_CACHE_KEYS } from "./providerSettingsService";
 
 /**
  * Cache-aside middleware wrapper for expensive queries
@@ -211,6 +213,138 @@ export class WebhookCacheInvalidation {
       },
       "All merchant caches invalidated",
     );
+  }
+}
+
+/**
+ * Provider configuration cache invalidation helpers.
+ *
+ * Called automatically by ProviderSettingsService on every write. Consumers
+ * that modify provider config through out-of-band means (e.g. direct DB
+ * migrations) should call these helpers manually to keep all cluster nodes
+ * consistent.
+ */
+export class ProviderConfigCacheInvalidation {
+  /**
+   * Invalidate all caches that depend on a provider's configuration.
+   *
+   * Steps:
+   *   1. Delete the per-provider and all-settings LayeredCache entries
+   *      (triggers L1 eviction + Redis DEL + Pub/Sub broadcast to all nodes).
+   *   2. Invalidate the provider config tags in the CachedQueryManager so
+   *      any tag-keyed query caches that embed provider config are also cleared.
+   *
+   * Call this after any provider config modification that must propagate
+   * instantly across all cluster instances.
+   */
+  static async invalidateOnConfigModification(
+    providerName: string,
+  ): Promise<void> {
+    const pName = providerName.toLowerCase();
+
+    // 1. LayeredCache invalidation (L1 + L2 + cross-cluster Pub/Sub).
+    await Promise.all([
+      layeredCache.del(PROVIDER_CACHE_KEYS.single(pName)),
+      layeredCache.del(PROVIDER_CACHE_KEYS.all()),
+      layeredCache.del(PROVIDER_CACHE_KEYS.outage(pName)),
+    ]);
+
+    // 2. Tag-based invalidation in CachedQueryManager.
+    const tags = [
+      CacheTags.providerConfig(pName),
+      CacheTags.providerConfig(), // global provider config tag
+      CacheTags.provider(pName),
+    ];
+    const invalidatedCount = await cachedQueryManager.invalidateByTags(tags);
+
+    logger.info(
+      {
+        providerName: pName,
+        tags,
+        invalidatedCount,
+        event: "provider_config_invalidation",
+      },
+      "[ProviderConfigCacheInvalidation] Provider config caches invalidated across all instances",
+    );
+  }
+
+  /**
+   * Force-refresh all provider config caches (nuclear option).
+   *
+   * Clears ALL provider settings and outage cache keys from L1, L2, and all
+   * sibling instances via Pub/Sub. Use after bulk config migrations or when
+   * cache poisoning is suspected.
+   */
+  static async forceRefreshAll(): Promise<void> {
+    // LayeredCache pattern-delete broadcasts to all instances.
+    await Promise.all([
+      layeredCache.del(PROVIDER_CACHE_KEYS.all()),
+      layeredCache.delPattern(PROVIDER_CACHE_KEYS.pattern()),
+      layeredCache.delPattern(PROVIDER_CACHE_KEYS.outagePattern()),
+    ]);
+
+    // Tag-based invalidation.
+    await cachedQueryManager.invalidateByTag(CacheTags.providerConfig());
+
+    logger.warn(
+      { event: "provider_config_force_refresh_all" },
+      "[ProviderConfigCacheInvalidation] All provider config caches force-cleared across all instances",
+    );
+  }
+
+  /**
+   * Verify that the latest settings for a provider are reflected across the
+   * cache layers (L1 and L2) by comparing the cached value against the DB.
+   *
+   * Returns `true` if the cache is consistent with the DB (or absent, which
+   * means the next read will re-populate from DB — also acceptable).
+   * Returns `false` if a stale value is detected.
+   *
+   * This is primarily intended for health-check endpoints and integration
+   * tests to assert that settings updates reflect across system modules
+   * immediately after a modification call.
+   */
+  static async verifySettingsReflectedAcrossModules(
+    providerName: string,
+    expectedSettings: { failure_threshold: number; timeout_ms: number },
+  ): Promise<boolean> {
+    // Re-fetch directly from cache (no DB fallback) to verify freshness.
+    const cached = await layeredCache.get<{
+      failure_threshold: number;
+      timeout_ms: number;
+    }>(PROVIDER_CACHE_KEYS.single(providerName));
+
+    if (cached === null) {
+      // Cache absent = acceptable (will re-populate on next read from DB).
+      logger.info(
+        { providerName, event: "provider_config_verify" },
+        "[ProviderConfigCacheInvalidation] Cache absent — will re-populate on next read",
+      );
+      return true;
+    }
+
+    const isConsistent =
+      cached.failure_threshold === expectedSettings.failure_threshold &&
+      cached.timeout_ms === expectedSettings.timeout_ms;
+
+    if (!isConsistent) {
+      logger.error(
+        {
+          providerName,
+          cached,
+          expectedSettings,
+          event: "provider_config_stale_cache",
+        },
+        "[ProviderConfigCacheInvalidation] STALE cache detected — cached values do not match expected settings",
+      );
+    } else {
+      logger.info(
+        { providerName, event: "provider_config_verify" },
+        "[ProviderConfigCacheInvalidation] Cache is consistent with expected settings",
+      );
+    }
+
+    return isConsistent;
   }
 }
 

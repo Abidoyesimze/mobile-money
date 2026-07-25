@@ -182,6 +182,7 @@ async function uploadBackupToS3(
         Key: key,
         Body: encryptedData,
         ContentType: "application/octet-stream",
+        ServerSideEncryption: "AES256",
         Metadata: {
           "backup-timestamp": metadata.timestamp,
           "backup-database": metadata.database,
