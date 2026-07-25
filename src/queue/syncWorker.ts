@@ -11,6 +11,7 @@ import {
 import { pool } from "../config/database";
 import { addAccountingRetryJob } from "./accountingRetryQueue";
 import { natsManager, NATS_QUEUE_ENABLED, type JsMsg } from "./nats";
+import { amlService, AMLTransactionRecord } from "../services/aml";
 
 const getSyncConcurrency = (): number => {
   const envVal = process.env.SYNC_WORKER_CONCURRENCY;
@@ -54,6 +55,52 @@ async function logAccountingSyncError(
 }
 
 /**
+ * Evaluates AML compliance and suspicious structuring patterns for synced transactions
+ */
+export async function checkSyncTransactionCompliance(
+  transactionId: string,
+  amountStr?: string,
+): Promise<void> {
+  try {
+    const query = `SELECT user_id AS "userId", type, amount, created_at AS "createdAt" FROM transactions WHERE id = $1`;
+    const result = await pool.query<{
+      userId: string;
+      type: "deposit" | "withdraw";
+      amount: number;
+      createdAt: Date;
+    }>(query, [transactionId]);
+
+    if (result.rows.length > 0) {
+      const row = result.rows[0];
+      const record: AMLTransactionRecord = {
+        id: transactionId,
+        userId: row.userId,
+        type: row.type || "deposit",
+        amount: Number(amountStr ?? row.amount),
+        createdAt: row.createdAt ? new Date(row.createdAt) : new Date(),
+      };
+      const amlResult = await amlService.monitorTransaction(record);
+      if (amlResult.flagged) {
+        logger.warn(
+          {
+            transactionId,
+            userId: row.userId,
+            reasons: amlResult.reasons,
+            ruleHits: amlResult.ruleHits,
+          },
+          "[SyncWorker] Suspicious transaction / structuring alert triggered during sync",
+        );
+      }
+    }
+  } catch (err) {
+    logger.error(
+      { transactionId, err },
+      "[SyncWorker] Failed to evaluate AML compliance on sync transaction",
+    );
+  }
+}
+
+/**
  * Sync Queue Processor Function
  * Handles the execution logic for a sync job, distinguishing transient and permanent errors.
  * On permanent failure after max retries, moves job to accounting retry queue for manual/scheduled retry.
@@ -73,6 +120,9 @@ export async function processSyncJob(
     },
     "Processing accounting sync operation",
   );
+
+  // Scan transaction for suspicious structuring / AML alert triggers
+  await checkSyncTransactionCompliance(transactionId, payload?.amount);
 
   try {
     if (platform === "quickbooks") {
@@ -210,6 +260,8 @@ async function processNatsSyncMessage(
   console.log(
     `[SyncWorker] [NATS] Processing accounting sync for transaction ${transactionId} to ${platform} (syncId=${syncId})`,
   );
+
+  await checkSyncTransactionCompliance(transactionId, data.payload?.amount);
 
   try {
     if (platform === "quickbooks") {
