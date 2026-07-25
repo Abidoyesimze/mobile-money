@@ -1050,7 +1050,8 @@ export class AccountingService {
 
     // Query QuickBooks for customers with matching email
     // Use a QBO query to find customers by email
-    const query = `SELECT * FROM Customer WHERE BillAddr.Email = '${email}' MAXRESULTS 10`;
+    const sanitizedEmail = email.replace(/'/g, "\\'");
+    const query = `SELECT * FROM Customer WHERE BillAddr.Email = '${sanitizedEmail}' MAXRESULTS 10`;
     const encodedQuery = encodeURIComponent(query);
 
     try {
