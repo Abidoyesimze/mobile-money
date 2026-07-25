@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["escrow", "htlc", "quicklendx-contracts"]
+members = ["escrow", "htlc", "quicklendx-contracts", "fee_pool"]
 
 [profile.release]
 opt-level = "z"
