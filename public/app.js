@@ -1,3 +1,31 @@
+// Theme Management
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  document.querySelectorAll(".theme-switcher button").forEach(btn => {
+    const active = btn.dataset.theme === theme;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", active);
+  });
+}
+
+function saveTheme(theme) {
+  localStorage.setItem("theme", theme);
+  setTheme(theme);
+}
+
+function loadTheme() {
+  const saved = localStorage.getItem("theme") || "carbon";
+  setTheme(saved);
+}
+
+// Initialize theme before anything else
+loadTheme();
+
+// Theme switcher event listeners
+document.querySelectorAll(".theme-switcher button").forEach(btn => {
+  btn.addEventListener("click", () => saveTheme(btn.dataset.theme));
+});
+
 // Live API Status Polling
 async function updateSystemStatus() {
   const dot = document.getElementById("status-dot");
