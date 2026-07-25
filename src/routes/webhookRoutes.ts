@@ -3,6 +3,7 @@ import { z } from "zod";
 import { validateWebhookSignature } from "../middleware/validateWebhookSignature";
 import { ingestRateLimiter } from "../middleware/ingestRateLimit";
 import { validateRequest } from "../middleware/validation";
+import { validateSourceIp } from "../middleware/validateSourceIp";
 import logger from "../utils/logger";
 
 const router = Router();
@@ -35,6 +36,7 @@ const orangeBatchCallbackSchema = z.object({
 // MTN webhook
 router.post(
   "/mtn/callback",
+  validateSourceIp("mtn"),
   validateWebhookSignature("mtn"),
   async (req: Request, res: Response) => {
     const transactionId = req.body?.transactionId;
@@ -67,6 +69,7 @@ router.post(
 // Orange webhook
 router.post(
   "/orange/callback",
+  validateSourceIp("orange"),
   validateWebhookSignature("orange"),
   validateRequest(orangeCallbackSchema),
   async (req: Request, res: Response) => {
@@ -84,6 +87,7 @@ router.post(
 
 router.post(
   "/orange/callback/batch",
+  validateSourceIp("orange"),
   validateWebhookSignature("orange"),
   validateRequest(orangeBatchCallbackSchema),
   async (req: Request, res: Response) => {
@@ -101,6 +105,7 @@ router.post(
 // Airtel webhook
 router.post(
   "/airtel/callback",
+  validateSourceIp("airtel"),
   validateWebhookSignature("airtel"),
   async (req: Request, res: Response) => {
     logger.info(
