@@ -2,6 +2,11 @@ import pino, { Logger, TransportTargetOptions } from 'pino';
 import os from 'os';
 import { REDACT_KEYS } from './redact';
 
+const pinoFactory = (pino as typeof pino & { default?: typeof pino }).default ?? pino;
+const pinoTransport = (pinoFactory as typeof pinoFactory & { transport?: (options: pino.TransportMultiOptions) => unknown }).transport;
+
+let loggerInstance: Logger;
+
 /**
  * Centralized Pino Logger — feature/centralized-logging
  *
@@ -92,7 +97,7 @@ function buildTransports(): pino.TransportMultiOptions | undefined {
 
 const transport = buildTransports();
 
-const logger: Logger = pino(
+const logger = pinoFactory(
   {
     level: LOG_LEVEL,
 
@@ -128,18 +133,36 @@ const logger: Logger = pino(
     // ISO-8601 timestamps
     timestamp: pino.stdTimeFunctions.isoTime,
   },
-  transport ? pino.transport(transport) : undefined,
-);
+  transport && pinoTransport ? pinoTransport(transport) : undefined,
+) as unknown as Logger;
 
+loggerInstance = logger;
+
+export function childLogger(traceId: string, extra?: Record<string, unknown>): Logger {
+  const child = loggerInstance.child({ trace_id: traceId, ...extra }) as Logger & { level?: string };
+  Object.defineProperty(child, 'level', {
+    configurable: true,
+    enumerable: true,
+    get: () => loggerInstance.level,
+  });
+  return child;
+}
+
+const loggerExports = logger as unknown as Logger & {
+  childLogger: typeof childLogger;
+  logger: Logger;
+  default: Logger;
+};
+
+loggerExports.childLogger = childLogger;
+loggerExports.logger = logger;
+loggerExports.default = logger;
+
+export { logger };
 export default logger;
 
-/**
- * Create a child logger pre-bound with a trace_id.
- * Use this in request handlers to propagate distributed trace context:
- *
- *   const reqLogger = childLogger(req.headers['x-trace-id'] as string);
- *   reqLogger.info({ path: req.path }, 'incoming request');
- */
-export function childLogger(traceId: string, extra?: Record<string, unknown>): Logger {
-  return logger.child({ trace_id: traceId, ...extra });
-}
+module.exports = loggerExports;
+(module.exports as typeof module.exports & { childLogger: typeof childLogger; logger: Logger; default: Logger }).childLogger = childLogger;
+(module.exports as typeof module.exports & { childLogger: typeof childLogger; logger: Logger; default: Logger }).logger = logger;
+(module.exports as typeof module.exports & { childLogger: typeof childLogger; logger: Logger; default: Logger }).default = logger;
+
