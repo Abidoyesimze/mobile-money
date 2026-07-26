@@ -18,6 +18,13 @@ export const requestContext = new AsyncLocalStorage<{ trace_id: string }>();
  *   service    – service name from SERVICE_NAME env var
  *
  * Transport:
+ *   - Production / CI  → raw JSON to stdout (pipe to log aggregator).
+ *                       Activated by NODE_ENV=production, LOG_FORMAT=json,
+ *                       or by leaving LOG_FORMAT unset (default is "json").
+ *   - Development      → pino-pretty for human-readable coloured output
+ *                       (enabled when LOG_PRETTY=true or LOG_FORMAT=pretty).
+ *                       The file stream and Loki transport always receive
+ *                       JSON regardless of stdout formatting.
  *   - Always writes to stdout (fallback / CI-safe)
  *   - Optionally ships to Loki via pino-loki when LOKI_HOST is set.
  *     The Loki transport runs in a worker thread (pino transport API) so
@@ -50,6 +57,26 @@ const LOG_FILE_RETENTION = Number.isFinite(configuredRetention)
   ? configuredRetention
   : 14;
 const SCRUB_CENSOR = "[REDACTED]";
+
+// ---------------------------------------------------------------------------
+// Output format
+//
+// LOG_FORMAT strictly defaults to "json" so production log aggregators
+// (Loki, ELK, CloudWatch, Datadog) can ingest every line without
+// transformation. NODE_ENV=production forces JSON even if LOG_FORMAT is
+// misconfigured. In non-production environments developers can opt into
+// pretty coloured output via LOG_FORMAT=pretty or LOG_PRETTY=true for
+// readable local development. Pretty output is only applied to stdout —
+// the rotating file stream and Loki transport always receive JSON.
+// ---------------------------------------------------------------------------
+
+const NODE_ENV = process.env.NODE_ENV ?? "development";
+const IS_PRODUCTION = NODE_ENV === "production";
+const LOG_FORMAT = (process.env.LOG_FORMAT ?? "json").toLowerCase();
+const LOG_PRETTY = process.env.LOG_PRETTY === "true";
+// Production always emits JSON; non-production can opt into pretty stdout.
+const USE_PRETTY_STDOUT =
+  !IS_PRODUCTION && (LOG_FORMAT === "pretty" || LOG_PRETTY);
 
 // ---------------------------------------------------------------------------
 // Global regex scrub filters — applied inside every transport so secrets
@@ -209,6 +236,26 @@ function ensureLogDirectory(): void {
   fs.mkdirSync(LOG_DIR, { recursive: true });
 }
 
+/**
+ * Build the stdout destination. In production this is always raw stdout
+ * (JSON lines). In non-production, when LOG_FORMAT=pretty or LOG_PRETTY=true,
+ * output is routed through pino-pretty for human-readable coloured logs.
+ */
+function buildStdoutStream(): DestinationStream {
+  if (!USE_PRETTY_STDOUT) {
+    return process.stdout;
+  }
+
+  return pino.transport({
+    target: "pino-pretty",
+    options: {
+      colorize: true,
+      translateTime: "SYS:standard",
+      ignore: "pid,hostname",
+    },
+  });
+}
+
 function buildFileStream(): DestinationStream {
   ensureLogDirectory();
 
@@ -232,20 +279,24 @@ function buildFileStream(): DestinationStream {
  * compresses old shards. The Loki target is added only when LOKI_HOST is
  * present in the environment, keeping CI and local dev working without any
  * external sink.
+ *
+ * The stdout stream respects LOG_FORMAT / LOG_PRETTY in non-production
+ * environments. The file stream and Loki transport always receive JSON
+ * regardless of stdout formatting.
  */
 function buildStreams(): StreamEntry[] | undefined {
   const lokiHost = process.env.LOKI_HOST;
 
   // In test environments skip all transports — tests use the raw pino
   // instance and should not attempt network connections.
-  if (process.env.NODE_ENV === "test") {
+  if (NODE_ENV === "test") {
     return undefined;
   }
 
   const streams: StreamEntry[] = [
     {
       level: LOG_LEVEL,
-      stream: wrapStreamWithScrubbing(process.stdout),
+      stream: wrapStreamWithScrubbing(buildStdoutStream()),
     },
     {
       level: LOG_LEVEL,
