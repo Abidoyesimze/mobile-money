@@ -64,6 +64,7 @@ import { readReplicaRoutingMiddleware } from "./middleware/readReplicaRouting";
 import { dbConnectionLeakDetector } from "./middleware/dbConnectionLeakDetector";
 import { i18nMiddleware } from "./utils/i18n";
 import { metricsMiddleware } from "./middleware/metrics";
+import { tracingMetricsMiddleware } from "./middleware/tracingMetrics";
 import { validateStellarNetwork, logStellarNetwork } from "./config/stellar";
 import { sessionAnomalyLogger } from "./services/logger";
 import { HealthCheckResponse, ReadinessCheckResponse } from "./types/api";
@@ -141,6 +142,8 @@ if (process.env.SENTRY_DSN) {
 app.use(sentryBreadcrumbMiddleware);
 
 app.use(metricsMiddleware);
+app.use(tracingMetricsMiddleware);
+applySecurityMiddleware(app);
 app.use(helmet());
 app.use(createCorsMiddleware());
 
