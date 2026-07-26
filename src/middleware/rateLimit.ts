@@ -1,3 +1,4 @@
+import logger from "../utils/logger";
 import { Request, Response, NextFunction } from "express";
 import { redisClient } from "../config/redis";
 
@@ -53,7 +54,7 @@ const rateLimitStore = new Map<string, RateLimitEntry>();
 async function checkRateLimit(
   key: string,
   limit: number,
-  windowMs: number
+  windowMs: number,
 ): Promise<{ allowed: boolean; remaining: number; resetTime: number }> {
   try {
     const now = Date.now();
@@ -62,7 +63,7 @@ async function checkRateLimit(
 
     // Use Redis to atomically increment and check
     const count = await redisClient.incr(key);
-    const countNum = typeof count === 'string' ? parseInt(count, 10) : count;
+    const countNum = typeof count === "string" ? parseInt(count, 10) : count;
 
     // Set expiry on first request in this window
     if (countNum === 1) {
@@ -74,7 +75,7 @@ async function checkRateLimit(
 
     return { allowed, remaining, resetTime };
   } catch (error) {
-    console.error("Rate limit Redis error:", error);
+    logger.error("Rate limit Redis error:", error);
     // Fallback to in-memory if Redis fails
     return checkRateLimitInMemory(key, limit, windowMs);
   }
@@ -86,7 +87,7 @@ async function checkRateLimit(
 function checkRateLimitInMemory(
   key: string,
   limit: number,
-  windowMs: number
+  windowMs: number,
 ): { allowed: boolean; remaining: number; resetTime: number } {
   const now = Date.now();
   const entry = rateLimitStore.get(key);
@@ -105,14 +106,18 @@ function checkRateLimitInMemory(
   }
 
   entry.count++;
-  return { allowed: true, remaining: limit - entry.count, resetTime: entry.resetTime };
+  return {
+    allowed: true,
+    remaining: limit - entry.count,
+    resetTime: entry.resetTime,
+  };
 }
 
 /**
  * Log high-severity events
  */
 const logHighSeverity = (message: string, context: Record<string, unknown>) => {
-  console.error(`[RATE_LIMIT_BREACH] HIGH SEVERITY: ${message}`, {
+  logger.error(`[RATE_LIMIT_BREACH] HIGH SEVERITY: ${message}`, {
     timestamp: new Date().toISOString(),
     ...context,
   });
@@ -129,7 +134,11 @@ const generateRateLimitKey = (userId: string, endpoint: string): string => {
  * Middleware: for sep24Routes (Deposit/Withdrawal)
  * Limit: 10 requests per minute per user
  */
-export const sep24RateLimiter = async (req: Request, res: Response, next: NextFunction) => {
+export const sep24RateLimiter = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
   const userId = (req as any).user?.id;
 
   if (!userId) {
@@ -254,7 +263,7 @@ async function checkSlidingWindowRateLimit(
       resetTime,
     };
   } catch (error) {
-    console.error("Cancellation rate limit Redis error:", error);
+    logger.error("Cancellation rate limit Redis error:", error);
     return {
       allowed: true,
       remaining: limit,
@@ -279,18 +288,17 @@ export const cancelTransactionRateLimiter = async (
   }
 
   const key = `cancellation:events:${userId}`;
-  const {
-    allowed,
-    remaining,
-    retryAfterSeconds,
-    resetTime,
-  } = await checkSlidingWindowRateLimit(
-    key,
-    RATE_LIMIT_CONFIG.CANCELLATION_LIMIT,
-    RATE_LIMIT_CONFIG.CANCELLATION_WINDOW_MS,
-  );
+  const { allowed, remaining, retryAfterSeconds, resetTime } =
+    await checkSlidingWindowRateLimit(
+      key,
+      RATE_LIMIT_CONFIG.CANCELLATION_LIMIT,
+      RATE_LIMIT_CONFIG.CANCELLATION_WINDOW_MS,
+    );
 
-  res.setHeader("X-RateLimit-Limit", String(RATE_LIMIT_CONFIG.CANCELLATION_LIMIT));
+  res.setHeader(
+    "X-RateLimit-Limit",
+    String(RATE_LIMIT_CONFIG.CANCELLATION_LIMIT),
+  );
   res.setHeader("X-RateLimit-Remaining", String(remaining));
   res.setHeader("X-RateLimit-Reset", new Date(resetTime).toISOString());
 
@@ -309,7 +317,11 @@ export const cancelTransactionRateLimiter = async (
  * Middleware: for sep31RateLimiter (Send Payment)
  * Limit: 5 requests per minute per user
  */
-export const sep31RateLimiter = async (req: Request, res: Response, next: NextFunction) => {
+export const sep31RateLimiter = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
   const userId = (req as any).user?.id;
 
   if (!userId) {
@@ -353,7 +365,11 @@ export const sep31RateLimiter = async (req: Request, res: Response, next: NextFu
  * Middleware: for sep12RateLimiter (KYC)
  * Limit: 20 requests per hour per user
  */
-export const sep12RateLimiter = async (req: Request, res: Response, next: NextFunction) => {
+export const sep12RateLimiter = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
   const userId = (req as any).user?.id;
 
   if (!userId) {
@@ -392,7 +408,6 @@ export const sep12RateLimiter = async (req: Request, res: Response, next: NextFu
 
   next();
 };
-
 
 /**
  * Middleware: Rate limit for export endpoints

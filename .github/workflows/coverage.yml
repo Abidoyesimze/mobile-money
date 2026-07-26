@@ -46,13 +46,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
 
       - name: Verify package-lock.json exists
         run: |
           if [ ! -f package-lock.json ]; then
-            npm install --package-lock-only
+            npm install --package-lock-only --ignore-scripts
           fi
 
       - name: Install system dependencies

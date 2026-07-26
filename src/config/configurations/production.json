@@ -8,5 +8,8 @@
   },
   "logging": {
     "enableSlowQueryLogging": false
+  },
+  "cors": {
+    "allowedOrigins": ["https://app.example.com"]
   }
 }

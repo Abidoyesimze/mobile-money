@@ -1,6 +1,9 @@
+import logger from "../utils/logger";
 import axios from "axios";
-import { exchangeRateBufferService, BufferedRate } from "./exchangeRateBufferService";
-
+import {
+  exchangeRateBufferService,
+  BufferedRate,
+} from "./exchangeRateBufferService";
 
 // ---------------------------------------------------------------------------
 // Supported currencies
@@ -15,6 +18,8 @@ export const SUPPORTED_CURRENCIES = [
   "TZS",
   "ZMW",
   "RWF",
+  "GNF",
+  "MGA",
 ] as const;
 
 export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
@@ -71,6 +76,8 @@ const FALLBACK_RATES: ExchangeRates = {
   TZS: 2600, // Tanzanian Shilling
   ZMW: 27, // Zambian Kwacha
   RWF: 1320, // Rwandan Franc
+  GNF: 8500, // Guinean Franc
+  MGA: 4500, // Malagasy Ariary
 };
 
 // ---------------------------------------------------------------------------
@@ -95,7 +102,7 @@ export class CurrencyService {
 
     this.refreshTimer = setInterval(() => {
       this.fetchRates().catch((err: Error) => {
-        console.error(
+        logger.error(
           "[CurrencyService] Scheduled rate refresh failed:",
           err.message,
         );
@@ -206,9 +213,14 @@ export class CurrencyService {
     provider: string,
     direction: "sell" | "buy" = "sell",
   ): Promise<ConversionResult & { buffer: BufferedRate }> {
-    return this.convertWithBuffer(amount, currency, BASE_CURRENCY, provider, direction);
+    return this.convertWithBuffer(
+      amount,
+      currency,
+      BASE_CURRENCY,
+      provider,
+      direction,
+    );
   }
-
 
   /** Return snapshot of cache state for health checks. */
   getStatus(): CurrencyServiceStatus {
@@ -286,12 +298,12 @@ export class CurrencyService {
       const message = (err as Error).message;
       if (this.cache) {
         // Stale cache is better than fallback — keep it and warn
-        console.error(
+        logger.error(
           `[CurrencyService] Rate refresh failed (keeping cached rates): ${message}`,
         );
       } else {
         // First load failed — use static fallbacks so the service stays usable
-        console.error(
+        logger.error(
           `[CurrencyService] Initial rate fetch failed (using fallback rates): ${message}`,
         );
         this.cache = { rates: FALLBACK_RATES, fetchedAt: new Date() };

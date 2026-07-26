@@ -1,11 +1,26 @@
-import { Request, Response } from 'express';
-import { Pool } from 'pg';
-import KYCService, { KYCLevel, DocumentType } from '../services/kyc';
-import { z } from 'zod';
-import { UserModel } from '../models/users';
+import { Request, Response } from "express";
+import crypto from "crypto";
+import { Pool } from "pg";
+import KYCService, { KYCLevel, DocumentType } from "../services/kyc";
+import { z } from "zod";
+import { UserModel } from "../models/users";
 import { createError } from "../middleware/errorHandler";
 import { ERROR_CODES } from "../constants/errorCodes";
+import {
+  commit,
+  commitWithBlinding,
+  verifyEqualOpenings,
+} from "../crypto/zkBalanceProof";
+import {
+  signCommitment,
+  verifyCommitmentSignature,
+  verifyRange,
+} from "../crypto/zkKycProof";
+import elliptic from "elliptic";
 import logger from "../utils/logger";
+
+const ecInstance = new elliptic.ec("secp256k1");
+const FALLBACK_PRIVATE_KEY = ecInstance.genKeyPair().getPrivate("hex");
 
 // Validation schemas
 const CreateApplicantSchema = z.object({
@@ -87,9 +102,14 @@ export class KYCController {
       await this.userModel.updateSensitiveData(userId, {
         firstName: validatedData.first_name,
         lastName: validatedData.last_name,
-        address: validatedData.address ? `${validatedData.address.building_number || ''} ${validatedData.address.street}, ${validatedData.address.town}, ${validatedData.address.postcode}, ${validatedData.address.country}`.trim() : undefined,
+        address: validatedData.address
+          ? `${validatedData.address.building_number || ""} ${validatedData.address.street}, ${validatedData.address.town}, ${validatedData.address.postcode}, ${validatedData.address.country}`.trim()
+          : undefined,
         dateOfBirth: validatedData.dob,
-        idNumber: validatedData.custom_fields?.id_number || (validatedData as any).id_number || (validatedData.custom_fields?.tax_id as string),
+        idNumber:
+          validatedData.custom_fields?.id_number ||
+          (validatedData as any).id_number ||
+          (validatedData.custom_fields?.tax_id as string),
       });
 
       res.status(201).json({
@@ -107,7 +127,7 @@ export class KYCController {
         });
       }
 
-      console.error("Create applicant error:", error);
+      logger.error("Create applicant error:", error);
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
         error instanceof Error ? error.message : "Unknown error",
@@ -148,7 +168,7 @@ export class KYCController {
         data: applicant,
       });
     } catch (error) {
-      console.error("Get applicant error:", error);
+      logger.error("Get applicant error:", error);
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
         error instanceof Error ? error.message : "Unknown error",
@@ -203,7 +223,7 @@ export class KYCController {
         });
       }
 
-      console.error("Upload document error:", error);
+      logger.error("Upload document error:", error);
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
         error instanceof Error ? error.message : "Unknown error",
@@ -262,7 +282,7 @@ export class KYCController {
         });
       }
 
-      console.error("Create workflow run error:", error);
+      logger.error("Create workflow run error:", error);
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
         "Failed to create workflow run",
@@ -319,7 +339,7 @@ export class KYCController {
         });
       }
 
-      console.error("Generate SDK token error:", error);
+      logger.error("Generate SDK token error:", error);
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
         "Failed to generate SDK token",
@@ -361,7 +381,7 @@ export class KYCController {
         data: verificationStatus,
       });
     } catch (error) {
-      console.error("Get verification status error:", error);
+      logger.error("Get verification status error:", error);
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
         "Failed to get verification status",
@@ -376,56 +396,60 @@ export class KYCController {
    * Get user's KYC status and transaction limits
    * GET /api/kyc/status
    */
- getUserKYCStatus = async (req: Request, res: Response) => {
-  try {
-    const userId = req.jwtUser?.userId;
-    if (!userId) {
-      throw createError(ERROR_CODES.UNAUTHORIZED, "User not authenticated", {
-        error: "User not authenticated",
-      });
-    }
+  getUserKYCStatus = async (req: Request, res: Response) => {
+    try {
+      const userId = req.jwtUser?.userId;
+      if (!userId) {
+        throw createError(ERROR_CODES.UNAUTHORIZED, "User not authenticated", {
+          error: "User not authenticated",
+        });
+      }
 
-    // Get user's current KYC level from database
-    const userQuery = `
+      // Get user's current KYC level from database
+      const userQuery = `
       SELECT kyc_level FROM users WHERE id = $1
     `;
-    const userResult = await this.db.query(userQuery, [userId]);
+      const userResult = await this.db.query(userQuery, [userId]);
 
-    if (userResult.rows.length === 0) {
-      throw createError(ERROR_CODES.NOT_FOUND, "User not found", {
-        error: "User not found",
-      });
-    }
+      if (userResult.rows.length === 0) {
+        throw createError(ERROR_CODES.NOT_FOUND, "User not found", {
+          error: "User not found",
+        });
+      }
 
-    const currentKYCLevel = userResult.rows[0].kyc_level as KYCLevel;
-    const transactionLimits =
-      this.kycService.getTransactionLimits(currentKYCLevel);
+      const currentKYCLevel = userResult.rows[0].kyc_level as KYCLevel;
+      const transactionLimits =
+        this.kycService.getTransactionLimits(currentKYCLevel);
 
-    // Get latest KYC applicant data if exists
-    const applicantQuery = `
+      // Get latest KYC applicant data if exists
+      const applicantQuery = `
       SELECT applicant_id, verification_status, kyc_level, updated_at
       FROM kyc_applicants 
       WHERE user_id = $1 
       ORDER BY updated_at DESC 
       LIMIT 1
     `;
-    const applicantResult = await this.db.query(applicantQuery, [userId]);
+      const applicantResult = await this.db.query(applicantQuery, [userId]);
 
-    res.json({
-      success: true,
-      data: {
-        current_kyc_level: currentKYCLevel,
-        transaction_limits: transactionLimits,
-        latest_verification: applicantResult.rows[0] || null,
-      },
-    });
-  } catch (error) {
-    console.error("Get user KYC status error:", error);
-    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to get KYC status", {
-      message: error instanceof Error ? error.message : "Unknown error",
-    });
-  }
-};
+      res.json({
+        success: true,
+        data: {
+          current_kyc_level: currentKYCLevel,
+          transaction_limits: transactionLimits,
+          latest_verification: applicantResult.rows[0] || null,
+        },
+      });
+    } catch (error) {
+      logger.error("Get user KYC status error:", error);
+      throw createError(
+        ERROR_CODES.INTERNAL_ERROR,
+        "Failed to get KYC status",
+        {
+          message: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
+    }
+  };
 
   /**
    * Handle webhook events from KYC provider
@@ -434,24 +458,24 @@ export class KYCController {
   handleWebhook = async (req: Request, res: Response) => {
     try {
       const webhookSecret = process.env.KYC_WEBHOOK_SECRET;
+      const signature = req.headers["x-onfido-signature"] as string | undefined;
 
-      // Verify webhook signature if secret is configured
-      if (webhookSecret && req.headers["x-onfido-signature"]) {
-        const signature = req.headers["x-onfido-signature"] as string;
+      if (webhookSecret && signature) {
+        const payload = this.getRawBody(req);
         const isValid = this.verifyWebhookSignature(
-          JSON.stringify(req.body),
+          payload,
           signature,
-          webhookSecret
+          webhookSecret,
         );
-        
+
         if (!isValid) {
           logger.warn(
             { signature, headers: req.headers },
-            'Invalid webhook signature'
+            "Invalid webhook signature",
           );
           throw createError(
             ERROR_CODES.UNAUTHORIZED,
-            "Invalid webhook signature"
+            "Invalid webhook signature",
           );
         }
       }
@@ -461,10 +485,17 @@ export class KYCController {
 
       res.status(200).json({ success: true });
     } catch (error) {
-      logger.error({ error }, 'Handle webhook error');
-      throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to handle webhook", {
-        message: error instanceof Error ? error.message : "Unknown error",
-      });
+      logger.error({ error }, "Handle webhook error");
+      if ((error as any)?.statusCode) {
+        throw error;
+      }
+      throw createError(
+        ERROR_CODES.INTERNAL_ERROR,
+        "Failed to handle webhook",
+        {
+          message: error instanceof Error ? error.message : "Unknown error",
+        },
+      );
     }
   };
 
@@ -478,25 +509,166 @@ export class KYCController {
   private verifyWebhookSignature(
     payload: string,
     signature: string,
-    secret: string
+    secret: string,
   ): boolean {
     try {
-      const crypto = require('crypto');
       const expectedSignature = crypto
-        .createHmac('sha256', secret)
+        .createHmac("sha256", secret)
         .update(payload)
-        .digest('hex');
-      
-      // Use timing-safe comparison to prevent timing attacks
+        .digest("hex");
+
+      if (signature.length !== expectedSignature.length) {
+        return false;
+      }
+
       return crypto.timingSafeEqual(
         Buffer.from(signature),
-        Buffer.from(expectedSignature)
+        Buffer.from(expectedSignature),
       );
     } catch (error) {
-      logger.error({ error }, 'Error verifying webhook signature');
+      logger.error({ error }, "Error verifying webhook signature");
       return false;
     }
   }
+
+  private getRawBody(req: Request): string {
+    const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+    return rawBody?.toString("utf8") ?? JSON.stringify(req.body ?? {});
+  }
+
+  /**
+   * Issue ZK credential ( Pedersen commitment + signature )
+   * POST /api/kyc/zk/issue-credential
+   */
+  issueZkCredential = async (req: Request, res: Response) => {
+    try {
+      const userId = req.jwtUser?.userId;
+      if (!userId) {
+        throw createError(ERROR_CODES.UNAUTHORIZED, "User not authenticated");
+      }
+
+      const { attribute_type, attribute_value } = req.body;
+      if (!attribute_type || attribute_value === undefined) {
+        throw createError(
+          ERROR_CODES.INVALID_INPUT,
+          "attribute_type and attribute_value are required",
+        );
+      }
+
+      const value = BigInt(attribute_value);
+      const { commitment, opening } = commit(value);
+
+      const authorityPrivateKey =
+        process.env.KYC_AUTHORITY_PRIVATE_KEY || FALLBACK_PRIVATE_KEY;
+      const signature = signCommitment(
+        authorityPrivateKey,
+        commitment.hex,
+        attribute_type,
+      );
+
+      res.status(201).json({
+        success: true,
+        data: {
+          commitment: commitment.hex,
+          blinding: opening.blinding.toString(),
+          value: opening.value.toString(),
+          attribute_type,
+          signature,
+        },
+      });
+    } catch (error) {
+      logger.error("Issue ZK credential error:", error);
+      if ((error as any).statusCode) throw error;
+      throw createError(
+        ERROR_CODES.INTERNAL_ERROR,
+        "Failed to issue ZK credential",
+      );
+    }
+  };
+
+  /**
+   * Verify ZK proof (range proof or equality proof)
+   * POST /api/kyc/zk/verify-proof
+   */
+  verifyZkProof = async (req: Request, res: Response) => {
+    try {
+      const userId = req.jwtUser?.userId;
+      if (!userId) {
+        throw createError(ERROR_CODES.UNAUTHORIZED, "User not authenticated");
+      }
+
+      const { commitment, attribute_type, signature, proof, expected_value } =
+        req.body;
+      if (
+        !commitment ||
+        !attribute_type ||
+        !signature ||
+        !proof ||
+        expected_value === undefined
+      ) {
+        throw createError(ERROR_CODES.INVALID_INPUT, "Missing required fields");
+      }
+
+      // Verify signature on commitment
+      const authorityPrivateKey =
+        process.env.KYC_AUTHORITY_PRIVATE_KEY || FALLBACK_PRIVATE_KEY;
+      const authorityPublicKey =
+        process.env.KYC_AUTHORITY_PUBLIC_KEY ||
+        ecInstance.keyFromPrivate(authorityPrivateKey, "hex").getPublic("hex");
+
+      const isSignatureValid = verifyCommitmentSignature(
+        authorityPublicKey,
+        commitment,
+        attribute_type,
+        signature,
+      );
+      if (!isSignatureValid) {
+        throw createError(
+          ERROR_CODES.INVALID_INPUT,
+          "Invalid authority signature on credential",
+        );
+      }
+
+      const point = ecInstance.curve.decodePoint(
+        Buffer.from(commitment, "hex"),
+      );
+      const commitObj = { point, hex: commitment };
+
+      let isProofValid = false;
+      if (attribute_type === "age") {
+        const threshold = BigInt(expected_value);
+        isProofValid = verifyRange(commitObj, proof, threshold, 8);
+      } else if (attribute_type === "nationality") {
+        isProofValid = verifyEqualOpenings(
+          commitObj,
+          commitWithBlinding(BigInt(expected_value), 0n),
+          proof,
+        );
+      }
+
+      if (!isProofValid) {
+        throw createError(
+          ERROR_CODES.INVALID_INPUT,
+          "ZK proof verification failed",
+        );
+      }
+
+      // Proof verified, update user to Tier-3 (Full)
+      await this.kycService.updateUserKYCLevel(userId, KYCLevel.FULL);
+
+      res.status(200).json({
+        success: true,
+        message: "KYC Tier-3 verified successfully via ZK proof",
+      });
+    } catch (error) {
+      logger.error("Verify ZK proof error:", error);
+      if ((error as any).statusCode) throw error;
+      throw createError(
+        ERROR_CODES.INTERNAL_ERROR,
+        "Failed to verify ZK proof",
+      );
+    }
+  };
 
   // Private helper methods
 
@@ -508,11 +680,12 @@ export class KYCController {
       const query = `
         INSERT INTO kyc_applicants (user_id, applicant_id, provider, verification_status, kyc_level)
         VALUES ($1, $2, 'entrust', 'pending', 'none')
+        ON CONFLICT (user_id, applicant_id) DO NOTHING
       `;
 
       await this.db.query(query, [userId, applicantId]);
     } catch (error) {
-      console.error("Failed to store applicant reference:", error);
+      logger.error("Failed to store applicant reference:", error);
       throw error;
     }
   }
@@ -531,7 +704,7 @@ export class KYCController {
       const result = await this.db.query(query, [userId, applicantId]);
       return result.rows.length > 0;
     } catch (error) {
-      console.error("Failed to verify applicant access:", error);
+      logger.error("Failed to verify applicant access:", error);
       return false;
     }
   }

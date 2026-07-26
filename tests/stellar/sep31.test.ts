@@ -23,17 +23,20 @@ jest.mock("../../src/models/transaction", () => {
   };
 });
 
-import sep31Router from "../../src/stellar/sep31";
+import sep31Router, { Sep31Status, isValidTransition, VALID_TRANSITIONS, calculateFee } from "../../src/stellar/sep31";
+import { errorHandler } from "../../src/middleware/errorHandler";
 
 // Create a minimal Express app mounting the SEP-31 router
 const app = express();
 app.use(express.json());
 app.use("/sep31", sep31Router);
+app.use(errorHandler);
 
 describe("SEP-31 Cross-Border Payments API", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.STELLAR_RECEIVING_ACCOUNT = "GABC1234567890123456789012345678901234567890123456789012345";
+    process.env.STELLAR_RECEIVING_ACCOUNT =
+      "GABC1234567890123456789012345678901234567890123456789012345";
   });
 
   // ─── GET /sep31/info ───────────────────────────────────────────
@@ -44,7 +47,8 @@ describe("SEP-31 Cross-Border Payments API", () => {
       expect(res.status).toBe(200);
       expect(res.body).toHaveProperty("receive");
 
-      const assetInfo = res.body.receive.XLM || Object.values(res.body.receive)[0];
+      const assetInfo =
+        res.body.receive.XLM || Object.values(res.body.receive)[0];
       expect(assetInfo).toBeDefined();
       expect(assetInfo).toHaveProperty("enabled", true);
       expect(assetInfo).toHaveProperty("fee_fixed");
@@ -139,16 +143,26 @@ describe("SEP-31 Cross-Border Payments API", () => {
         createdAt: new Date(),
       });
 
-      await request(app)
-        .post("/sep31/transactions")
-        .send(validPayload);
+      await request(app).post("/sep31/transactions").send(validPayload);
 
       expect(mockCreate).toHaveBeenCalledTimes(1);
       const createArg = mockCreate.mock.calls[0][0];
-      expect(createArg.metadata.sep31).toHaveProperty("sender_id", "sender-123");
-      expect(createArg.metadata.sep31).toHaveProperty("receiver_id", "receiver-456");
-      expect(createArg.metadata.sep31).toHaveProperty("receiver_routing_number", "021000021");
-      expect(createArg.metadata.sep31).toHaveProperty("receiver_account_number", "1234567890");
+      expect(createArg.metadata.sep31).toHaveProperty(
+        "sender_id",
+        "sender-123",
+      );
+      expect(createArg.metadata.sep31).toHaveProperty(
+        "receiver_id",
+        "receiver-456",
+      );
+      expect(createArg.metadata.sep31).toHaveProperty(
+        "receiver_routing_number",
+        "021000021",
+      );
+      expect(createArg.metadata.sep31).toHaveProperty(
+        "receiver_account_number",
+        "1234567890",
+      );
       expect(createArg.metadata.sep31).toHaveProperty("payout_type", "SWIFT");
       expect(createArg.provider).toBe("stellar-sep31");
     });
@@ -161,14 +175,12 @@ describe("SEP-31 Cross-Border Payments API", () => {
         createdAt: new Date(),
       });
 
-      const res = await request(app)
-        .post("/sep31/transactions")
-        .send({
-          amount: "50",
-          asset_code: "XLM",
-          sender_id: "top-sender",
-          receiver_id: "top-receiver",
-        });
+      const res = await request(app).post("/sep31/transactions").send({
+        amount: "50",
+        asset_code: "XLM",
+        sender_id: "top-sender",
+        receiver_id: "top-receiver",
+      });
 
       expect(res.status).toBe(201);
       const createArg = mockCreate.mock.calls[0][0];
@@ -302,7 +314,10 @@ describe("SEP-31 Cross-Border Payments API", () => {
       expect(res.body.transaction).toHaveProperty("amount_out", "50.00");
       expect(res.body.transaction).toHaveProperty("amount_fee", "0.25");
       expect(res.body.transaction).toHaveProperty("stellar_memo_type", "text");
-      expect(res.body.transaction).toHaveProperty("stellar_memo", "abcdef1234567890abcdef123456");
+      expect(res.body.transaction).toHaveProperty(
+        "stellar_memo",
+        "abcdef1234567890abcdef123456",
+      );
       expect(res.body.transaction).toHaveProperty("started_at");
       expect(res.body.transaction.status_eta).toBeDefined();
     });
@@ -335,7 +350,9 @@ describe("SEP-31 Cross-Border Payments API", () => {
       expect(res.status).toBe(200);
       expect(res.body.transaction.status).toBe("completed");
       expect(res.body.transaction.completed_at).toBe(completedAt.toISOString());
-      expect(res.body.transaction.stellar_transaction_id).toBe("abc123stellartx");
+      expect(res.body.transaction.stellar_transaction_id).toBe(
+        "abc123stellartx",
+      );
       expect(res.body.transaction.status_eta).toBeNull();
     });
 
@@ -496,9 +513,7 @@ describe("SEP-31 Cross-Border Payments API", () => {
   // ─── Status State Machine ──────────────────────────────────────
 
   describe("SEP-31 Status State Machine", () => {
-    it("should correctly export status enum and helpers", async () => {
-      const { Sep31Status, isValidTransition, VALID_TRANSITIONS } = await import("../../src/stellar/sep31");
-
+    it("should correctly export status enum and helpers", () => {
       expect(Sep31Status.PendingSender).toBe("pending_sender");
       expect(Sep31Status.PendingStellar).toBe("pending_stellar");
       expect(Sep31Status.PendingReceiver).toBe("pending_receiver");
@@ -507,24 +522,33 @@ describe("SEP-31 Cross-Border Payments API", () => {
       expect(Sep31Status.Error).toBe("error");
     });
 
-    it("should validate allowed transitions", async () => {
-      const { isValidTransition, Sep31Status } = await import("../../src/stellar/sep31");
-
+    it("should validate allowed transitions", () => {
       // pending_sender -> pending_stellar: OK
-      expect(isValidTransition(Sep31Status.PendingSender, Sep31Status.PendingStellar)).toBe(true);
+      expect(
+        isValidTransition(
+          Sep31Status.PendingSender,
+          Sep31Status.PendingStellar,
+        ),
+      ).toBe(true);
       // pending_sender -> error: OK
-      expect(isValidTransition(Sep31Status.PendingSender, Sep31Status.Error)).toBe(true);
+      expect(
+        isValidTransition(Sep31Status.PendingSender, Sep31Status.Error),
+      ).toBe(true);
       // pending_sender -> completed: NOT OK (must go through stellar first)
-      expect(isValidTransition(Sep31Status.PendingSender, Sep31Status.Completed)).toBe(false);
+      expect(
+        isValidTransition(Sep31Status.PendingSender, Sep31Status.Completed),
+      ).toBe(false);
       // completed -> anything: NOT OK
-      expect(isValidTransition(Sep31Status.Completed, Sep31Status.Error)).toBe(false);
+      expect(isValidTransition(Sep31Status.Completed, Sep31Status.Error)).toBe(
+        false,
+      );
       // error -> pending_stellar: OK (retry)
-      expect(isValidTransition(Sep31Status.Error, Sep31Status.PendingStellar)).toBe(true);
+      expect(
+        isValidTransition(Sep31Status.Error, Sep31Status.PendingStellar),
+      ).toBe(true);
     });
 
-    it("should calculate fees correctly", async () => {
-      const { calculateFee } = await import("../../src/stellar/sep31");
-
+    it("should calculate fees correctly", () => {
       const result = calculateFee(100);
       expect(result.fee).toBeGreaterThan(0);
       expect(result.total).toBe(100 + result.fee);
