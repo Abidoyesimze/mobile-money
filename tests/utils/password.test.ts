@@ -16,13 +16,34 @@ describe("password utils", () => {
   });
 
   describe("hashPassword", () => {
-    it("should hash a password correctly", async () => {
+    it("should enforce minimum 12 bcrypt rounds even if BCRYPT_ROUNDS is set lower", async () => {
+      process.env.BCRYPT_ROUNDS = "10";
       (bcrypt.hash as jest.Mock).mockResolvedValue("hashed_password");
 
       const result = await hashPassword("my_password");
 
       expect(result).toBe("hashed_password");
-      expect(bcrypt.hash).toHaveBeenCalledWith("my_password", 10);
+      expect(bcrypt.hash).toHaveBeenCalledWith("my_password", 12);
+    });
+
+    it("should default to 12 bcrypt rounds when BCRYPT_ROUNDS is unset", async () => {
+      delete process.env.BCRYPT_ROUNDS;
+      (bcrypt.hash as jest.Mock).mockResolvedValue("hashed_password");
+
+      const result = await hashPassword("my_password");
+
+      expect(result).toBe("hashed_password");
+      expect(bcrypt.hash).toHaveBeenCalledWith("my_password", 12);
+    });
+
+    it("should honor BCRYPT_ROUNDS if set to 12 or higher", async () => {
+      process.env.BCRYPT_ROUNDS = "14";
+      (bcrypt.hash as jest.Mock).mockResolvedValue("hashed_password");
+
+      const result = await hashPassword("my_password");
+
+      expect(result).toBe("hashed_password");
+      expect(bcrypt.hash).toHaveBeenCalledWith("my_password", 14);
     });
 
     it("should throw an error if hashing fails", async () => {
