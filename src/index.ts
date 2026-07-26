@@ -1,3 +1,4 @@
+import logger from "./utils/logger";
 // Initialize centralized configuration first
 import "./config/init";
 
@@ -8,9 +9,9 @@ import { IncomingMessage, Server } from "http";
 import compression from "compression";
 import dotenv from "dotenv";
 import helmet from "helmet";
+import axios from "axios";
 import * as Sentry from "@sentry/node";
-import { register } from "prom-client";
-import spdy from "spdy";
+import http2 from "http2";
 import fs from "fs";
 import session from "express-session";
 import type { SessionOptions } from "express-session";
@@ -28,6 +29,7 @@ import {
   vaultRoutesV1,
 } from "./routes/v1";
 import { transactionRoutes } from "./routes/transactions";
+import { initializeEscrowEventProcessing } from "./services/stellar/stellarService";
 import { authRoutes } from "./routes/auth";
 import { bulkRoutes } from "./routes/bulk";
 import { transactionDisputeRoutes, disputeRoutes } from "./routes/disputes";
@@ -58,6 +60,7 @@ import {
 import { requireAuth } from "./middleware/auth";
 import { responseTime } from "./middleware/responseTime";
 import { requestId } from "./middleware/requestId";
+import { createCorsMiddleware } from "./middleware/cors";
 import { readReplicaRoutingMiddleware } from "./middleware/readReplicaRouting";
 import { dbConnectionLeakDetector } from "./middleware/dbConnectionLeakDetector";
 import { i18nMiddleware } from "./utils/i18n";
@@ -69,15 +72,22 @@ import { privacyRoutes } from "./routes/privacy";
 import { developerDashboardRoutes } from "./routes/developerDashboard";
 import { travelRuleRoutes } from "./routes/travelRule";
 import mtnCallbacksRouter from "./routes/mtnCallbacks";
+import orangeMadagascarCallbacksRouter from "./routes/orangeMadagascarCallbacks";
+import orangeGuineaCallbacksRouter from "./routes/orangeGuineaCallbacks";
+import multisigCallbacksRouter from "./routes/multisigCallbacks";
+import { createMetricsRouter } from "./routes/metrics";
 import sep31Router from "./stellar/sep31";
 import sep24Router from "./stellar/sep24";
 import sep38Router from "./stellar/sep38";
 import { createSep12Router } from "./stellar/sep12";
 import { createSep10Router } from "./stellar/sep10";
+import { createSep8Router } from "./stellar/sep8";
 import { sep30Routes } from "./routes/sep30";
 import { createAdminSep10Router } from "./stellar/adminSep10";
 import tomlRouter from "./routes/toml";
 import feeStrategiesRouter from "./routes/feeStrategies";
+import { ipBlacklistMiddleware } from "./middleware/ipBlacklist";
+import { providerLogMaskingMiddleware } from "./middleware/providerLogMasking";
 import crossChainRouter from "./routes/crossChain";
 import stellarRouter from "./routes/stellar";
 import reconciliationRoutes from "./routes/reconciliation";
@@ -87,9 +97,14 @@ import adminAssetRoutes from "./routes/admin/assets";
 import settingsRoutes from "./routes/settings";
 import { statementsRoutes } from "./routes/statements";
 import { paymentLinkRoutes } from "./routes/paymentLinkRoutes.js";
+import { SEP24_INTERACTIVE_HTML } from "./services/sep24InteractivePage.js";
 import providerStatusRouter from "./routes/providerStatus";
-import { startHeartbeatService, stopHeartbeatService } from "./services/heartbeatService";
+import {
+  startHeartbeatService,
+  stopHeartbeatService,
+} from "./services/heartbeatService";
 import { startStellarExporter } from "./services/stellarExporter";
+import { StellarService } from "./services/stellar/stellarService";
 
 // Sentry Middleware
 import { initSentry, sentryBreadcrumbMiddleware } from "./middleware/sentry";
@@ -129,6 +144,7 @@ app.use(sentryBreadcrumbMiddleware);
 
 app.use(metricsMiddleware);
 app.use(helmet());
+app.use(createCorsMiddleware());
 
 // Compression middleware
 if (process.env.COMPRESSION_ENABLED !== "false") {
@@ -177,7 +193,11 @@ app.use(responseTime);
 app.use(requestId);
 app.use(readReplicaRoutingMiddleware);
 app.use(i18nMiddleware);
+// Block requests from blacklisted IPs as early as possible — before any
+// business logic, session handling, or route matching.
+app.use(ipBlacklistMiddleware);
 app.use(dbConnectionLeakDetector);
+app.use(providerLogMaskingMiddleware);
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (isShuttingDown) {
@@ -229,6 +249,43 @@ app.get("/health", (_req: Request, res: Response) => {
   res.json(body);
 });
 
+app.get("/api/live-rates", async (_req: Request, res: Response) => {
+  try {
+    const response = await axios.get("https://open.er-api.com/v6/latest/USD", {
+      timeout: 5000,
+    });
+    if (response.data && response.data.result === "success") {
+      res.json({
+        success: true,
+        rates: response.data.rates,
+        provider: "live",
+      });
+      return;
+    }
+  } catch (error) {
+    logger.warn(
+      "[API] Live rates fetch failed, using fallback:",
+      (error as Error).message,
+    );
+  }
+
+  // Fallback to our hardcoded rates
+  res.json({
+    success: true,
+    rates: {
+      USD: 1,
+      XAF: 600,
+      NGN: 1550,
+      KES: 130,
+      GHS: 15,
+      TZS: 2600,
+      ZMW: 27,
+      RWF: 1320,
+    },
+    provider: "fallback",
+  });
+});
+
 app.get("/ready", async (_req: Request, res: Response) => {
   const checks: Record<string, string> = {
     database: "down",
@@ -245,7 +302,7 @@ app.get("/ready", async (_req: Request, res: Response) => {
     await pool.query("SELECT 1");
     checks.database = "ok";
   } catch (err) {
-    console.error("Database check failed", err);
+    logger.error("Database check failed", err);
     allReady = false;
   }
 
@@ -258,7 +315,7 @@ app.get("/ready", async (_req: Request, res: Response) => {
       allReady = false;
     }
   } catch (err) {
-    console.error("Redis check failed", err);
+    logger.error("Redis check failed", err);
     allReady = false;
   }
 
@@ -330,6 +387,8 @@ app.get("/health/lb", async (req: Request, res: Response) => {
   res.status(healthy ? 200 : 503).json(responseData);
 });
 
+app.use("/.well-known/stellar.toml", tomlRouter);
+app.use(express.static(path.join(process.cwd(), "public")));
 app.use(globalTimeout);
 app.use(haltOnTimedout);
 
@@ -370,6 +429,9 @@ app.use("/api/disputes", disputeRoutes);
 app.use("/api/stats", statsRoutes);
 app.use("/api/contacts", contactsRoutes);
 app.use("/api/mtn", mtnCallbacksRouter);
+app.use("/api/orange-madagascar", orangeMadagascarCallbacksRouter);
+app.use("/api/orange-guinea", orangeGuineaCallbacksRouter);
+app.use("/api/multisig", multisigCallbacksRouter);
 app.use("/api/reports", reportsRoutes);
 app.use("/api/fees", feesRoutes);
 app.use("/api/users", userRoutes);
@@ -382,6 +444,10 @@ app.use("/api/exchange-rate-buffers", exchangeRateBufferRoutes);
 app.use("/api/admin/assets", adminAssetRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/statements", statementsRoutes);
+app.get("/", (_req: Request, res: Response) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(SEP24_INTERACTIVE_HTML);
+});
 app.use("/", paymentLinkRoutes);
 
 // GDPR
@@ -392,22 +458,15 @@ app.use("/api/admin/providers/status", requireAuth, providerStatusRouter);
 app.use("/api/admin/kyc-upgrades", requireAuth, kycTierUpgradeRoutes);
 app.use("/api/admin/auth", createAdminSep10Router());
 app.use("/sep10", createSep10Router());
+app.use("/sep8", createSep8Router(pool));
 app.use("/sep31", sep31Router);
 app.use("/sep24", sep24Router);
 app.use("/sep38", sep38Router);
 app.use("/sep12", createSep12Router(pool));
 app.use("/sep30", sep30Routes);
-app.use("/.well-known/stellar.toml", tomlRouter);
 
 // Prometheus Metrics Scraper Endpoint
-app.get("/metrics", async (req: Request, res: Response) => {
-  try {
-    res.set("Content-Type", register.contentType);
-    res.end(await register.metrics());
-  } catch (ex) {
-    res.status(500).end(String(ex));
-  }
-});
+app.use("/metrics", createMetricsRouter());
 
 app.use(
   (
@@ -428,7 +487,7 @@ app.use(
 );
 
 if (process.env.SENTRY_DSN) {
-  app.use(Sentry.expressErrorHandler());
+  app.use(Sentry.expressErrorHandler() as any);
 }
 
 app.use(timeoutErrorHandler);
@@ -514,7 +573,7 @@ async function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
     console.log("[Shutdown] Graceful shutdown complete");
     process.exit(0);
   } catch (error) {
-    console.error("[Shutdown] Shutdown sequence failed", error);
+    logger.error("[Shutdown] Shutdown sequence failed", error);
     process.exit(1);
   }
 }
@@ -541,6 +600,16 @@ async function initializeRuntime(): Promise<void> {
   // Initialize Prometheus Horizon Scraper
   startStellarExporter();
 
+  // Verify Horizon reachability before starting runtime workers
+  try {
+    const stellarService = new StellarService();
+    await stellarService.pingHorizon();
+    console.log("Horizon server reachable");
+  } catch (err) {
+    console.error("Horizon unreachable during startup. Halting startup.", err);
+    process.exit(1);
+  }
+
   // Initialize System Heartbeat Metric
   startHeartbeatService();
 
@@ -562,7 +631,8 @@ async function initializeRuntime(): Promise<void> {
     await layeredCache.init();
     console.log("Layered cache (L1/L2) initialized");
 
-    const { providerSettingsService } = await import("./services/providerSettingsService.js");
+    const { providerSettingsService } =
+      await import("./services/providerSettingsService.js");
     await providerSettingsService.getAllSettings();
     console.log("Provider settings cache initialized");
 
@@ -570,13 +640,15 @@ async function initializeRuntime(): Promise<void> {
       startProviderBalanceAlertWorker,
       scheduleProviderBalanceAlertJob,
       startAccountingTokenRefreshWorker,
+      startWebhookRetryWorker,
     } = await import("./queue/index.js");
     startProviderBalanceAlertWorker();
     startAccountingTokenRefreshWorker();
+    startWebhookRetryWorker();
     await scheduleProviderBalanceAlertJob();
     console.log("Provider balance alert queue initialized");
   } catch (err) {
-    console.error("Redis failed", err);
+    logger.error("Redis failed", err);
     console.warn("Distributed locks not available");
   }
 
@@ -592,7 +664,10 @@ async function initializeRuntime(): Promise<void> {
       cert: fs.readFileSync(path.join(__dirname, "../certs/cert.pem")),
     };
 
-    const http2Server = spdy.createServer(sslOptions, app);
+    const http2Server = http2.createSecureServer(
+      { ...sslOptions, allowHTTP1: true },
+      app as any,
+    );
     http2Server.listen(PORT, () => {
       console.log(`HTTP/2 server running on https://localhost:${PORT}`);
     });
@@ -613,6 +688,7 @@ async function initializeRuntime(): Promise<void> {
 
 if (process.env.NODE_ENV !== "test") {
   void initializeRuntime();
+  initializeEscrowEventProcessing();
 }
 
 export default app;

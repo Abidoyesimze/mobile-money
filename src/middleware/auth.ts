@@ -1,3 +1,4 @@
+import logger from "../utils/logger";
 import { Request, Response, NextFunction } from "express";
 import { verifyOAuthAccessToken } from "../auth/oauth";
 import { verifyToken, JWTPayload } from "../auth/jwt";
@@ -100,10 +101,14 @@ export const requireAuth = async (
       if (result.rows.length > 0) {
         const row = result.rows[0];
         if (!row.is_active) {
-          return res.status(401).json({ error: "Unauthorized", message: "API key is inactive" });
+          return res
+            .status(401)
+            .json({ error: "Unauthorized", message: "API key is inactive" });
         }
         if (row.expires_at && new Date(row.expires_at) < new Date()) {
-          return res.status(401).json({ error: "Unauthorized", message: "API key has expired" });
+          return res
+            .status(401)
+            .json({ error: "Unauthorized", message: "API key has expired" });
         }
 
         (req as AuthRequest).user = { id: "api-key-user", role: "admin" };
@@ -113,7 +118,7 @@ export const requireAuth = async (
     } catch (err) {
       // DB lookup failure — fall through to env-var check so a DB outage doesn't
       // lock out the system admin key.
-      console.error("[requireAuth] DB api_keys lookup failed:", err);
+      logger.error("[requireAuth] DB api_keys lookup failed:", err);
     }
 
     // 2. Fall back to system ADMIN_API_KEY env var
@@ -123,7 +128,9 @@ export const requireAuth = async (
       return next();
     }
 
-    return res.status(401).json({ error: "Unauthorized", message: "Invalid API key" });
+    return res
+      .status(401)
+      .json({ error: "Unauthorized", message: "Invalid API key" });
   }
 
   const authorization = req.header("Authorization");
@@ -270,15 +277,17 @@ export function optionalAuthentication(
 export async function verifyTokenStateful(token: string): Promise<JWTPayload> {
   // Run standard cryptographic verification
   const decoded = verifyToken(token);
-  
+
   // Fast Redis check to ensure token wasn't issued before a password change
   if (redisClient.isOpen && decoded.userId && decoded.iat) {
-    const invalidatedAtRaw = await redisClient.get(`user:${decoded.userId}:jwt_invalidated_at`);
+    const invalidatedAtRaw = await redisClient.get(
+      `user:${decoded.userId}:jwt_invalidated_at`,
+    );
     const invalidatedAt = invalidatedAtRaw ? String(invalidatedAtRaw) : null;
     if (invalidatedAt && decoded.iat <= parseInt(invalidatedAt, 10)) {
       throw new Error("Token has been revoked due to password change");
     }
   }
-  
+
   return decoded;
 }

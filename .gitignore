@@ -5,6 +5,7 @@ node_modules/
 dist/
 contracts/target/
 *.tsbuildinfo
+.docusaurus/
 
 # Kotlin SDK build artifacts
 sdk/build/
@@ -36,7 +37,9 @@ pact.log
 # Kiro
 .kiro/
 
-
+# Playwright
+playwright-report/
+test-results/
 
 # Load test output
 tests/load/results/*.json

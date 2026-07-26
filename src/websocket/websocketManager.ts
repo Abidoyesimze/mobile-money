@@ -1,7 +1,9 @@
+import logger from "../utils/logger";
 import { WebSocketServer, WebSocket } from "ws";
 import { IncomingMessage, Server } from "http";
 import { createClient, RedisClientType } from "redis";
 import { verifyToken } from "../auth/jwt";
+import { TransactionModel, type Transaction } from "../models/transaction";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,6 +19,15 @@ export interface TransactionUpdatePayload {
   status: string;
   userId?: string | null;
   [key: string]: unknown;
+}
+
+interface TransactionDetailsRequestPayload {
+  transactionId: string;
+}
+
+interface TransactionDetailsResponsePayload {
+  transactionId: string;
+  transaction: Transaction | null;
 }
 
 interface AuthenticatedWebSocket extends WebSocket {
@@ -48,6 +59,7 @@ export class WebSocketManager {
   private userRooms: Map<string, Set<string>> = new Map();
   // Map of transactionId -> Set of client IDs subscribed to that transaction
   private subscriptions: Map<string, Set<string>> = new Map();
+  private transactionModel = new TransactionModel();
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private redisSub: RedisClientType | null = null;
   private redisPub: RedisClientType | null = null;
@@ -86,7 +98,10 @@ export class WebSocketManager {
       }
 
       try {
-        const decoded = verifyToken(token) as unknown as Record<string, unknown>;
+        const decoded = verifyToken(token) as unknown as Record<
+          string,
+          unknown
+        >;
         const candidateUserId =
           typeof decoded.userId === "string"
             ? decoded.userId
@@ -118,7 +133,7 @@ export class WebSocketManager {
 
       // Handle incoming messages from client
       client.on("message", (rawData) => {
-        this.handleMessage(clientId, client, rawData.toString());
+        void this.handleMessage(clientId, client, rawData.toString());
       });
 
       // Cleanup on disconnect
@@ -127,7 +142,7 @@ export class WebSocketManager {
       });
 
       client.on("error", (err) => {
-        console.error(`WebSocket client error (${clientId}):`, err);
+        logger.error(err, `WebSocket client error (${clientId}):`);
       });
 
       // Acknowledge connection
@@ -142,11 +157,11 @@ export class WebSocketManager {
   // Message handling
   // -------------------------------------------------------------------------
 
-  private handleMessage(
+  private async handleMessage(
     clientId: string,
     client: AuthenticatedWebSocket,
     rawData: string,
-  ): void {
+  ): Promise<void> {
     let message: WebSocketMessage;
 
     try {
@@ -175,6 +190,13 @@ export class WebSocketManager {
         const payload = message.data as { transactionId: string };
         if (!payload?.transactionId) break;
         this.unsubscribe(clientId, client, payload.transactionId);
+        break;
+      }
+
+      case "transaction.details": {
+        const payload = message.data as TransactionDetailsRequestPayload;
+        if (!payload?.transactionId) break;
+        await this.sendTransactionDetails(client, payload.transactionId);
         break;
       }
 
@@ -243,7 +265,7 @@ export class WebSocketManager {
   ): Promise<void> {
     const message: WebSocketMessage = {
       type: "transaction.updated",
-      data: payload,
+      data: { transactionId: payload.id },
     };
 
     // Publish to Redis for inter-process distribution
@@ -268,6 +290,42 @@ export class WebSocketManager {
     }
 
     this.broadcastLocally(payload.id, message);
+  }
+
+  private async sendTransactionDetails(
+    client: AuthenticatedWebSocket,
+    transactionId: string,
+  ): Promise<void> {
+    try {
+      const transaction = await this.transactionModel.findById(
+        transactionId,
+        client.userId,
+      );
+
+      if (!transaction) {
+        this.sendToClient(client, {
+          type: "transaction.details.not_found",
+          data: { transactionId },
+        });
+        return;
+      }
+
+      const response: WebSocketMessage = {
+        type: "transaction.details",
+        data: {
+          transactionId,
+          transaction,
+        } satisfies TransactionDetailsResponsePayload,
+      };
+
+      this.sendToClient(client, response);
+    } catch (err) {
+      logger.error(err, `Failed to load transaction details (${transactionId}):`);
+      this.sendToClient(client, {
+        type: "error",
+        data: { message: "Failed to load transaction details" },
+      });
+    }
   }
 
   /** Send a message to all locally-connected clients subscribed to transactionId. */
@@ -346,7 +404,9 @@ export class WebSocketManager {
         if (!client.isAlive) {
           client.missedPings += 1;
           if (client.missedPings >= this.MAX_MISSED_PINGS) {
-            console.log(`Terminating stale WebSocket client after ${client.missedPings} missed pings: ${clientId}`);
+            console.log(
+              `Terminating stale WebSocket client after ${client.missedPings} missed pings: ${clientId}`,
+            );
             client.terminate();
             this.handleDisconnect(clientId, client);
             continue;
@@ -394,7 +454,7 @@ export class WebSocketManager {
         // Only broadcast locally – the publishing instance already did so
         this.broadcastLocally(transactionId, message);
       } catch (err) {
-        console.error("Failed to handle Redis message:", err);
+        logger.error(err, "Failed to handle Redis message:");
       }
     });
 

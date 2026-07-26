@@ -1,3 +1,4 @@
+import logger from "./logger";
 import bcrypt from "bcrypt";
 
 const rounds = Number(process.env.BCRYPT_ROUNDS) || 10;
@@ -12,7 +13,7 @@ export async function hashPassword(password: string): Promise<string> {
     const hash = await bcrypt.hash(password, rounds);
     return hash;
   } catch (error) {
-    console.error("Error hashing password:", error);
+    logger.error(error, "Error hashing password:");
     throw new Error("Could not hash password");
   }
 }
@@ -30,7 +31,7 @@ export async function comparePassword(
   try {
     return await bcrypt.compare(password, hash);
   } catch (error) {
-    console.error("Error comparing password:", error);
+    logger.error(error, "Error comparing password:");
     throw new Error("Could not compare password");
   }
 }

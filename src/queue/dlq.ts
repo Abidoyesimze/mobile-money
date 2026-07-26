@@ -60,23 +60,36 @@ export async function dlqInspectorHandler(req: Request, res: Response) {
   try {
     const start = parseInt(req.query.start as string) || 0;
     const limit = parseInt(req.query.limit as string) || 50;
+    const transactionId = req.query.transactionId as string | undefined;
 
-    // Fetch jobs with pagination to avoid memory issues with large failure sets
-    const jobs = await deadLetterQueue.getJobs(
-      ["waiting"],
-      start,
-      start + limit - 1,
-    );
-    const items = jobs.map((job) => ({
+    let jobs;
+    if (transactionId) {
+      // Fetch a larger set then filter in memory by transactionId
+      const allJobs = await deadLetterQueue.getJobs(["waiting"], 0, 9999);
+      jobs = allJobs.filter(
+        (job) => job.data?.data?.transactionId === transactionId,
+      );
+    } else {
+      jobs = await deadLetterQueue.getJobs(
+        ["waiting"],
+        start,
+        start + limit - 1,
+      );
+    }
+
+    const paginated = jobs.slice(start, start + limit);
+    const items = paginated.map((job) => ({
       dlqId: job.id,
       ...job.data,
     }));
 
     return res.status(200).json({
       success: true,
+      total: jobs.length,
       count: items.length,
       start,
       limit,
+      ...(transactionId && { transactionId }),
       items,
     });
   } catch (error) {

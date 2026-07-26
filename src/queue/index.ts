@@ -3,17 +3,34 @@ import { transactionQueue } from "./transactionQueue";
 import { transactionWorker, closeWorker } from "./worker";
 import { syncQueue } from "./syncQueue";
 import { syncWorker, closeSyncWorker } from "./syncWorker";
+import {
+  accountingRetryQueue,
+  closeAccountingRetryQueue,
+} from "./accountingRetryQueue";
+import {
+  accountingRetryWorker,
+  closeAccountingRetryWorker,
+} from "./accountingRetryWorker";
 import { connection } from "./config";
 import { startProviderBalanceAlertWorker } from "./providerBalanceAlertWorker";
 import { scheduleProviderBalanceAlertJob } from "./providerBalanceAlertQueue";
-import { startAccountingTokenRefreshWorker, closeAccountingTokenRefreshWorker } from "./accountingTokenRefreshWorker";
+import {
+  startAccountingTokenRefreshWorker,
+  closeAccountingTokenRefreshWorker,
+} from "./accountingTokenRefreshWorker";
+import {
+  startWebhookRetryWorker,
+  closeWebhookRetryWorker,
+} from "./webhookRetryWorker";
 
 export async function shutdownQueue(): Promise<void> {
   await Promise.all([
     closeWorker().catch(() => undefined),
     closeSyncWorker().catch(() => undefined),
+    closeAccountingRetryWorker().catch(() => undefined),
     transactionQueue.close().catch(() => undefined),
     syncQueue.close().catch(() => undefined),
+    closeWebhookRetryWorker().catch(() => undefined),
   ]);
 }
 
@@ -58,6 +75,24 @@ export { queueOptions } from "./config";
 export { deadLetterQueue, DLQ_NAME, capturePersistentFailure } from "./dlq";
 export { startProviderBalanceAlertWorker, scheduleProviderBalanceAlertJob };
 
+// Accounting Retry Queue Exports
+export {
+  accountingRetryQueue,
+  addAccountingRetryJob,
+  getAccountingRetryJobById,
+  getAccountingRetryQueueStats,
+  retryAccountingOperation,
+  closeAccountingRetryQueue,
+} from "./accountingRetryQueue";
+export type {
+  AccountingRetryJobData,
+  AccountingRetryJobResult,
+} from "./accountingRetryQueue";
+export {
+  accountingRetryWorker,
+  closeAccountingRetryWorker,
+} from "./accountingRetryWorker";
+
 // Account Merge Queue Exports
 export {
   accountMergeQueue,
@@ -79,10 +114,17 @@ export {
   closeAccountMergeWorker,
 } from "./accountMergeWorker";
 
+export { startAccountingTokenRefreshWorker, closeAccountingTokenRefreshWorker };
+
 export {
-  startAccountingTokenRefreshWorker,
-  closeAccountingTokenRefreshWorker,
-};
+  startWebhookRetryWorker,
+  closeWebhookRetryWorker,
+} from "./webhookRetryWorker";
 
 // Trace-ID propagation utilities
-export { withTraceId, traceIdFromJob, childLoggerWithTrace, TRACE_ID_KEY } from "./trace";
+export {
+  withTraceId,
+  traceIdFromJob,
+  childLoggerWithTrace,
+  TRACE_ID_KEY,
+} from "./trace";

@@ -5,6 +5,8 @@
     "lib": ["ES2022", "DOM"],
     "outDir": "./dist",
     "rootDir": ".",
+    "allowJs": true,
+    "checkJs": false,
     "strict": false,
     "noImplicitAny": false,
     "strictNullChecks": false,
@@ -21,6 +23,13 @@
     "typeRoots": ["./node_modules/@types"]
   },
   "include": ["src/**/*", "scripts/**/*"],
-  "exclude": ["node_modules", "dist", "src/utils/currency/examples/react-usage.tsx", "**/*.test.ts", "**/*.spec.ts", "**/__tests__/**", "tests/**"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/utils/currency/examples/react-usage.tsx",
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "**/__tests__/**",
+    "tests/**"
+  ]
 }
-

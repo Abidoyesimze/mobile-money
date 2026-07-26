@@ -1,11 +1,14 @@
 #!/usr/bin/env node
+import { printError } from "./momo-cli";
 import dotenv from "dotenv";
 import { Pool } from "pg";
 
 dotenv.config();
 
 if (process.env.NODE_ENV !== "development") {
-  console.error("Seeding is allowed only in development environment. Set NODE_ENV=development to proceed.");
+  printError(
+    "Seeding is allowed only in development environment. Set NODE_ENV=development to proceed.",
+  );
   process.exit(1);
 }
 
@@ -13,7 +16,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 async function upsertUser(phone: string, kyc: string) {
   const res = await pool.query(
-    `INSERT INTO users (phone_number, kyc_level) VALUES ($1, $2)
+    `INSERT INTO users (phone_number, kyc_level, role_id) VALUES ($1, $2, 'de8e8649-68ee-4e66-a4e5-2005fd2bfc71')
      ON CONFLICT (phone_number) DO UPDATE SET kyc_level = EXCLUDED.kyc_level
      RETURNING id`,
     [phone, kyc],
@@ -21,27 +24,67 @@ async function upsertUser(phone: string, kyc: string) {
   return res.rows[0].id;
 }
 
-async function insertTransaction(ref: string, type: string, amount: number, phone: string, provider: string, stellar: string, status: string, userId: string | null) {
+async function insertTransaction(
+  ref: string,
+  type: string,
+  amount: number,
+  phone: string,
+  provider: string,
+  stellar: string,
+  status: string,
+  userId: string | null,
+) {
+  const check = await pool.query(
+    "SELECT id FROM transactions WHERE reference_number = $1 LIMIT 1",
+    [ref]
+  );
+  if (check.rows.length > 0) {
+    const existingId = check.rows[0].id;
+    await pool.query(
+      "UPDATE transactions SET status = $1 WHERE id = $2",
+      [status, existingId]
+    );
+    return existingId;
+  }
+
   const res = await pool.query(
     `INSERT INTO transactions (reference_number, type, amount, phone_number, provider, stellar_address, status, user_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-     ON CONFLICT (reference_number) DO UPDATE SET status = EXCLUDED.status
      RETURNING id`,
     [ref, type, amount, phone, provider, stellar, status, userId],
   );
   return res.rows[0].id;
 }
 
-async function upsertFeeConfig(name: string, percentage: number, min: number, max: number, userId: string) {
+async function upsertFeeConfig(
+  name: string,
+  percentage: number,
+  min: number,
+  max: number,
+  userId: string,
+) {
   await pool.query(
     `INSERT INTO fee_configurations (name, description, fee_percentage, fee_minimum, fee_maximum, created_by, updated_by)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (name) DO NOTHING`,
-    [name, `Automatically seeded ${name} fee configuration`, percentage, min, max, userId, userId],
+    [
+      name,
+      `Automatically seeded ${name} fee configuration`,
+      percentage,
+      min,
+      max,
+      userId,
+      userId,
+    ],
   );
 }
 
-async function insertDispute(txId: string, reason: string, status: string, reportedBy: string) {
+async function insertDispute(
+  txId: string,
+  reason: string,
+  status: string,
+  reportedBy: string,
+) {
   await pool.query(
     `INSERT INTO disputes (transaction_id, reason, status, reported_by)
      VALUES ($1, $2, $3, $4)
@@ -98,29 +141,54 @@ async function seed() {
       const ref = `SEED-${counter}-${provider.toUpperCase()}`;
       const stellar = `GSEED${String(counter).padStart(52, "0").slice(0, 56)}`;
 
-      const txId = await insertTransaction(ref, type, amount, user.phone, provider, stellar, status, userIds[user.phone]);
+      const txId = await insertTransaction(
+        ref,
+        type,
+        amount,
+        user.phone,
+        provider,
+        stellar,
+        status,
+        userIds[user.phone],
+      );
       seededTxIds.push(txId);
       counter++;
     }
 
     // 4. Create sample disputes for varied statuses
     const disputeSample = [
-      { reason: "Amount mismatch on provider side", status: "open", reportedBy: "Customer" },
-      { reason: "Transaction not reflected in mobile wallet", status: "investigating", reportedBy: "Customer" },
-      { reason: "Double charge reported", status: "resolved", reportedBy: "Internal Audit" },
-      { reason: "Incorrect mobile number provided", status: "rejected", reportedBy: "Customer" },
+      {
+        reason: "Amount mismatch on provider side",
+        status: "open",
+        reportedBy: "Customer",
+      },
+      {
+        reason: "Transaction not reflected in mobile wallet",
+        status: "investigating",
+        reportedBy: "Customer",
+      },
+      {
+        reason: "Double charge reported",
+        status: "resolved",
+        reportedBy: "Internal Audit",
+      },
+      {
+        reason: "Incorrect mobile number provided",
+        status: "rejected",
+        reportedBy: "Customer",
+      },
     ];
 
     console.log("Seeding disputes...");
     for (let i = 0; i < disputeSample.length; i++) {
-        const txId = seededTxIds[i % seededTxIds.length];
-        const d = disputeSample[i];
-        await insertDispute(txId, d.reason, d.status, d.reportedBy);
+      const txId = seededTxIds[i % seededTxIds.length];
+      const d = disputeSample[i];
+      await insertDispute(txId, d.reason, d.status, d.reportedBy);
     }
 
     console.log("Seeding complete.");
   } catch (err) {
-    console.error("Seeding failed:", err);
+    printError("Seeding failed:", err);
     process.exit(1);
   } finally {
     await pool.end();
@@ -128,4 +196,3 @@ async function seed() {
 }
 
 seed();
-

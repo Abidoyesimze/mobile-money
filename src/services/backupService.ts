@@ -1,3 +1,4 @@
+import logger from "../utils/logger";
 /**
  * Database Backup Service (Issue #553)
  *
@@ -17,7 +18,14 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
-import { S3Client, PutObjectCommand, HeadBucketCommand, ListObjectsV2Command, GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  PutObjectCommand,
+  HeadBucketCommand,
+  ListObjectsV2Command,
+  GetObjectCommand,
+  HeadObjectCommand,
+} from "@aws-sdk/client-s3";
 import { pool } from "../config/database";
 import { env } from "../config/env";
 
@@ -77,7 +85,7 @@ function deriveBackupKey(): Buffer {
       Buffer.from("backup-encryption"),
       Buffer.from("database-backup"),
       32,
-    )
+    ),
   );
 }
 
@@ -91,12 +99,9 @@ function deriveBackupKey(): Buffer {
 export function encryptBackup(dumpBuffer: Buffer): Buffer {
   const key = deriveBackupKey();
   const iv = crypto.randomBytes(IV_LENGTH);
-  
+
   const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, key, iv);
-  const encrypted = Buffer.concat([
-    cipher.update(dumpBuffer),
-    cipher.final(),
-  ]);
+  const encrypted = Buffer.concat([cipher.update(dumpBuffer), cipher.final()]);
   const authTag = cipher.getAuthTag();
 
   // Format: [IV][AuthTag][EncryptedData]
@@ -111,7 +116,7 @@ export function encryptBackup(dumpBuffer: Buffer): Buffer {
  */
 export function decryptBackup(encryptedBuffer: Buffer): Buffer {
   const key = deriveBackupKey();
-  
+
   // Extract IV and auth tag
   const iv = encryptedBuffer.slice(0, IV_LENGTH);
   const authTag = encryptedBuffer.slice(IV_LENGTH, IV_LENGTH + AUTH_TAG_LENGTH);
@@ -149,7 +154,7 @@ async function verifyBackupBucket(): Promise<boolean> {
     await s3.send(new HeadBucketCommand({ Bucket: BACKUP_BUCKET }));
     return true;
   } catch (err) {
-    console.error(`Backup bucket ${BACKUP_BUCKET} not accessible:`, err);
+    logger.error(`Backup bucket ${BACKUP_BUCKET} not accessible:`, err);
     return false;
   }
 }
@@ -177,6 +182,7 @@ async function uploadBackupToS3(
         Key: key,
         Body: encryptedData,
         ContentType: "application/octet-stream",
+        ServerSideEncryption: "AES256",
         Metadata: {
           "backup-timestamp": metadata.timestamp,
           "backup-database": metadata.database,
@@ -194,7 +200,7 @@ async function uploadBackupToS3(
     console.log(`✓ Backup uploaded to S3: s3://${BACKUP_BUCKET}/${key}`);
     return `s3://${BACKUP_BUCKET}/${key}`;
   } catch (err) {
-    console.error("Failed to upload backup to S3:", err);
+    logger.error("Failed to upload backup to S3:", err);
     throw err;
   }
 }
@@ -260,7 +266,9 @@ export async function createBackup(): Promise<BackupResult> {
       );
     }
 
-    console.log(`✓ Backup dump created: ${(dumpStats.size / 1024 / 1024).toFixed(2)} MB`);
+    console.log(
+      `✓ Backup dump created: ${(dumpStats.size / 1024 / 1024).toFixed(2)} MB`,
+    );
 
     // Read dump into memory
     const dumpBuffer = fs.readFileSync(tempDumpFile);
@@ -300,7 +308,7 @@ export async function createBackup(): Promise<BackupResult> {
       duration_ms: duration,
     };
   } catch (err) {
-    console.error("Backup failed:", err);
+    logger.error("Backup failed:", err);
     return {
       success: false,
       backupId,
@@ -314,7 +322,7 @@ export async function createBackup(): Promise<BackupResult> {
         await fsUnlink(tempDumpFile);
         console.log("✓ Temporary dump file cleaned up");
       } catch (err) {
-        console.error("Failed to clean up temporary dump file:", err);
+        logger.error("Failed to clean up temporary dump file:", err);
       }
     }
   }
@@ -341,7 +349,9 @@ async function streamToBuffer(stream: any): Promise<Buffer> {
  *
  * @param backupId Backup identifier
  */
-export async function getBackupMetadata(backupId: string): Promise<BackupMetadata> {
+export async function getBackupMetadata(
+  backupId: string,
+): Promise<BackupMetadata> {
   const s3 = getS3Client();
   const key = `backups/${backupId}.dump.enc`;
   try {
@@ -364,7 +374,7 @@ export async function getBackupMetadata(backupId: string): Promise<BackupMetadat
       checksum: s3Metadata["backup-checksum"] || "",
     };
   } catch (err) {
-    console.error(`Failed to get metadata for backup ${backupId}:`, err);
+    logger.error(`Failed to get metadata for backup ${backupId}:`, err);
     throw err;
   }
 }
@@ -382,7 +392,7 @@ export async function validateBackupIntegrity(
 ): Promise<boolean> {
   try {
     if (!metadata.checksum || metadata.checksum.length !== 64) {
-      console.error("Invalid checksum format");
+      logger.error("Invalid checksum format");
       return false;
     }
 
@@ -407,14 +417,16 @@ export async function validateBackupIntegrity(
     const checksum = computeChecksum(decryptedData);
 
     if (checksum !== metadata.checksum) {
-      console.error(`Backup ${backupId} integrity verification failed: Checksum mismatch!`);
+      logger.error(
+        `Backup ${backupId} integrity verification failed: Checksum mismatch!`,
+      );
       return false;
     }
 
     console.log(`✓ Backup ${backupId} integrity check passed`);
     return true;
   } catch (err) {
-    console.error(`Backup integrity check failed for ${backupId}:`, err);
+    logger.error(`Backup integrity check failed for ${backupId}:`, err);
     return false;
   }
 }
@@ -454,7 +466,10 @@ export async function verifyDataSafety(): Promise<{
         details.most_recent_backup_age_hours = parseFloat(ageHours.toFixed(2));
         details.most_recent_backup_id = mostRecent.backupId;
 
-        const maxAgeHours = parseInt(process.env.BACKUP_MAX_AGE_HOURS || "25", 10);
+        const maxAgeHours = parseInt(
+          process.env.BACKUP_MAX_AGE_HOURS || "25",
+          10,
+        );
         details.fresh_backup_exists = ageHours < maxAgeHours;
       } else {
         details.fresh_backup_exists = false;
@@ -462,11 +477,14 @@ export async function verifyDataSafety(): Promise<{
     }
 
     return {
-      safe: details.bucket_accessible && details.encryption_enabled && (details.recent_backups === 0 || details.fresh_backup_exists),
+      safe:
+        details.bucket_accessible &&
+        details.encryption_enabled &&
+        (details.recent_backups === 0 || details.fresh_backup_exists),
       details,
     };
   } catch (err) {
-    console.error("Data safety check failed:", err);
+    logger.error("Data safety check failed:", err);
     return {
       safe: false,
       details: { ...details, error: String(err) },
@@ -509,7 +527,7 @@ export async function listBackups(): Promise<
 
     return backups.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   } catch (err) {
-    console.error("Failed to list backups from S3:", err);
+    logger.error("Failed to list backups from S3:", err);
     throw err;
   }
 }
