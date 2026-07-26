@@ -20,16 +20,62 @@ This platform connects mobile money wallets to the Stellar blockchain, allowing 
 
 The sender and recipient interact with their familiar mobile money apps. Stellar handles the cross-border settlement invisibly.
 
-```
-  📱 MTN MoMo (Cameroon)                           📱 Airtel Money (Kenya)
-         │                                                  ▲
-         ▼                                                  │
-  ┌─────────────────────────────────────────────────────────────────┐
-  │                    Mobile Money ↔ Stellar Bridge                │
-  │                                                                 │
-  │   Deposit (XAF → USDC)  ──►  Stellar Network  ──►  Withdraw    │
-  │                              (settles in ~5s)                   │
-  └─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Source["📱 Source Mobile Money"]
+        MTN["MTN MoMo<br/>Cameroon"]
+        AirtelSrc["Airtel Money<br/>Nigeria"]
+        OrangeSrc["Orange Money<br/>Senegal"]
+    end
+
+    subgraph Bridge["🌉 Mobile Money ↔ Stellar Bridge"]
+        API["REST / GraphQL API"]
+        MM["Mobile Money Service<br/>(debit / credit)"]
+        Ledger["Double-Entry Ledger"]
+        Fee["Dynamic Fee Engine"]
+        Queue["BullMQ Job Queue<br/>+ Redis"]
+        Vault["Vault System"]
+    end
+
+    subgraph Stellar["💫 Stellar Network"]
+        Horizon["Horizon API"]
+        Assets["Assets<br/>XLM · USDC · Custom"]
+        Soroban["Soroban Smart Contracts<br/>Escrow · HTLC"]
+    end
+
+    subgraph Dest["📱 Destination Mobile Money"]
+        AirtelDst["Airtel Money<br/>Kenya"]
+        Mpesa["M-Pesa<br/>Kenya"]
+        OrangeDst["Orange Money<br/>Madagascar"]
+    end
+
+    MTN -->|"1. Deposit XAF"| API
+    AirtelSrc -->|"1. Deposit NGN"| API
+    OrangeSrc -->|"1. Deposit XOF"| API
+
+    API -->|"2. Validate / Auth"| MM
+    MM -->|"3. Debit wallet"| MTN
+    MM -->|"3. Debit wallet"| AirtelSrc
+    MM -->|"3. Debit wallet"| OrangeSrc
+    MM -->|"4. Record tx"| Ledger
+    Ledger -->|"5. Apply fees"| Fee
+    Ledger -->|"6. Secure funds"| Vault
+
+    Ledger -->|"7. Mint / swap tokens"| Queue
+    Queue -->|"8. Submit tx (~5s)"| Horizon
+    Horizon -->|"9. Issue assets"| Assets
+    Horizon <-->|"10. Escrow/HTLC"| Soroban
+
+    Assets -->|"11. Burn / lock tokens"| Queue
+    Queue -->|"12. Credit payout"| MM
+    MM -->|"13. Credit wallet"| AirtelDst
+    MM -->|"13. Credit wallet"| Mpesa
+    MM -->|"13. Credit wallet"| OrangeDst
+
+    style Bridge fill:#e0f2fe,stroke:#0369a1,stroke-width:2px
+    style Stellar fill:#ede9fe,stroke:#7c3aed,stroke-width:2px
+    style Source fill:#fef3c7,stroke:#d97706,stroke-width:2px
+    style Dest fill:#dcfce7,stroke:#16a34a,stroke-width:2px
 ```
 
 ### Use Cases
@@ -359,6 +405,220 @@ Auto-flagging of suspicious transactions:
 - Sanctions list screening on every transaction
 
 ## 🏗️ Architecture
+
+### Data Flow Overview
+
+This diagram maps the end-to-end data movement across mobile money providers, the bridge service, and the Stellar network for both deposit and withdrawal flows.
+
+```mermaid
+flowchart TB
+    subgraph UserLayer["👤 User Layer"]
+        Sender["Sender<br/>(Mobile Money App)"]
+        Recipient["Recipient<br/>(Mobile Money App)"]
+    end
+
+    subgraph ProviderLayer["📡 Mobile Money Providers"]
+        direction LR
+        MTN["MTN MoMo API"]
+        Airtel["Airtel Money API"]
+        Orange["Orange Money API"]
+    end
+
+    subgraph BridgeLayer["🌉 Bridge Service Layer"]
+        direction TB
+        subgraph APISub["API Gateway"]
+            REST["REST API<br/>(40+ endpoints)"]
+            GraphQL["GraphQL API<br/>(queries + subscriptions)"]
+            WS["WebSocket<br/>(live updates)"]
+        end
+
+        subgraph MiddlewareSub["Middleware Pipeline"]
+            Auth["Auth (JWT / 2FA)"]
+            RBAC["RBAC (Casbin)"]
+            RateLimit["Rate Limiting"]
+            AML["AML / Sanctions Check"]
+            Audit["Audit Logging"]
+        end
+
+        subgraph ServicesSub["Core Services"]
+            TxService["Transaction Service"]
+            MMSvc["Mobile Money Service<br/>(circuit breaker + failover)"]
+            StellarSvc["Stellar Service<br/>(SDK + Horizon)"]
+            FeeSvc["Fee Engine<br/>(VIP tiers + strategies)"]
+            LedgerSvc["Double-Entry Ledger"]
+            VaultSvc["Vault / Liquidity Mgmt"]
+        end
+
+        subgraph DataSub["Data & Processing"]
+            PG[("PostgreSQL 16<br/>+ read replicas")]
+            RD[("Redis 7<br/>cache / pub/sub")]
+            BQ["BullMQ Queues<br/>+ Workers"]
+        end
+
+        subgraph ComplianceSub["Compliance & Security"]
+            KYC["Multi-tier KYC<br/>(Entrust + S3)"]
+            Travel["FATF Travel Rule"]
+            Dispute["Dispute Mgmt<br/>(State Machine)"]
+        end
+    end
+
+    subgraph StellarLayer["💫 Stellar Network Layer"]
+        direction LR
+        Horizon["Horizon API<br/>(testnet / mainnet)"]
+        Assets["Assets<br/>XLM · USDC · Custom"]
+        Soroban["Soroban Smart Contracts<br/>Escrow · HTLC · Swap Router"]
+        StellarCore["Stellar Core Nodes<br/>(consensus ~5s)"]
+    end
+
+    %% ======== DEPOSIT FLOW (Mobile Money → Stellar) ========
+    Sender -->|"D1. Initiate deposit<br/>via USSD / App"| MTN
+    Sender -->|"D1. Initiate deposit"| Airtel
+    Sender -->|"D1. Initiate deposit"| Orange
+
+    MTN -->|"D2. Callback / Poll"| REST
+    Airtel -->|"D2. Callback / Poll"| REST
+    Orange -->|"D2. Callback / Poll"| REST
+
+    REST -->|"D3. Route request"| Auth
+    Auth -->|"D4. Verify identity"| KYC
+    Auth --> RBAC
+    RBAC --> RateLimit
+    RateLimit --> AML
+    AML -->|"D5. Screen sanctions"| PG
+    AML --> Audit
+
+    Audit -->|"D6. Create transaction"| TxService
+    TxService -->|"D7. Debit wallet (async)"| BQ
+    BQ -->|"D8. Provider request"| MMSvc
+    MMSvc -->|"D9. requestPayment()"| MTN
+    MMSvc -->|"D9. requestPayment()"| Airtel
+    MMSvc -->|"D9. requestPayment()"| Orange
+
+    MTN -->|"D10. Debit success"| MMSvc
+    Airtel -->|"D10. Debit success"| MMSvc
+    Orange -->|"D10. Debit success"| MMSvc
+
+    MMSvc -->|"D11. Confirm debit"| TxService
+    TxService -->|"D12. Apply fee"| FeeSvc
+    TxService -->|"D13. Ledger entries"| LedgerSvc
+    LedgerSvc -->|"D14. Journal → DB"| PG
+    LedgerSvc -->|"D15. Lock funds"| VaultSvc
+    VaultSvc --> PG
+
+    TxService -->|"D16. Enqueue mint"| BQ
+    BQ -->|"D17. Worker: build tx"| StellarSvc
+    StellarSvc -->|"D18. Build + sign tx"| Horizon
+    Horizon -->|"D19. Submit to network"| StellarCore
+    StellarCore -->|"D20. Consensus ✔︎"| Horizon
+    Horizon -->|"D21. Credit assets"| Assets
+    StellarSvc <-->|"D22. Escrow if needed"| Soroban
+
+    StellarSvc -->|"D23. Update status"| TxService
+    TxService -->|"D24. Notify via WS/SMS/Email"| WS
+    TxService --> PG
+    WS --> Sender
+
+    %% ======== WITHDRAWAL FLOW (Stellar → Mobile Money) ========
+    Recipient -->|"W1. Receive notification"| WS
+
+    Sender -->|"W2. Initiate withdraw<br/>from Stellar"| GraphQL
+    GraphQL --> Auth
+    Auth -->|"W3. 2FA required"| RBAC
+    RBAC --> RateLimit
+    RateLimit --> AML
+    AML --> Audit
+
+    Audit -->|"W4. Create withdraw tx"| TxService
+    TxService -->|"W5. Check KYC tier"| KYC
+    KYC --> PG
+
+    TxService -->|"W6. Enqueue burn"| BQ
+    BQ -->|"W7. Worker: burn/lock"| StellarSvc
+    StellarSvc -->|"W8. Submit burn tx"| Horizon
+    Horizon --> StellarCore
+    StellarCore -->|"W9. Burn / lock assets"| Assets
+    StellarSvc -->|"W10. Escrow release"| Soroban
+
+    StellarSvc -->|"W11. Confirm on-chain"| TxService
+    TxService -->|"W12. Ledger entries"| LedgerSvc
+    LedgerSvc -->|"W13. Unlock funds"| VaultSvc
+    LedgerSvc --> PG
+
+    TxService -->|"W14. Enqueue payout"| BQ
+    BQ -->|"W15. Worker: payout"| MMSvc
+    MMSvc -->|"W16. sendPayout()"| MTN
+    MMSvc -->|"W16. sendPayout()"| Airtel
+    MMSvc -->|"W16. sendPayout()"| Orange
+
+    MTN -->|"W17. Credit wallet"| Recipient
+    Airtel -->|"W17. Credit wallet"| Recipient
+    Orange -->|"W17. Credit wallet"| Recipient
+
+    MTN -->|"W18. Payout confirm"| MMSvc
+    Airtel -->|"W18. Payout confirm"| MMSvc
+    Orange -->|"W18. Payout confirm"| MMSvc
+
+    MMSvc -->|"W19. Reconcile"| TxService
+    TxService --> PG
+    TxService -->|"W20. Notify recipient"| WS
+
+    %% Styling
+    style UserLayer fill:#fff7ed,stroke:#c2410c,stroke-width:2px
+    style ProviderLayer fill:#fef3c7,stroke:#d97706,stroke-width:2px
+    style BridgeLayer fill:#e0f2fe,stroke:#0369a1,stroke-width:2px
+    style StellarLayer fill:#ede9fe,stroke:#7c3aed,stroke-width:2px
+
+    style APISub fill:#dbeafe,stroke:#2563eb,stroke-width:1px
+    style MiddlewareSub fill:#fce7f3,stroke:#be185d,stroke-width:1px
+    style ServicesSub fill:#d1fae5,stroke:#047857,stroke-width:1px
+    style DataSub fill:#f3e8ff,stroke:#6d28d9,stroke-width:1px
+    style ComplianceSub fill:#fee2e2,stroke:#b91c1c,stroke-width:1px
+```
+
+### Deposit → Withdrawal End-to-End Sequence
+
+```mermaid
+sequenceDiagram
+    actor Sender
+    participant MM as Mobile Money Provider
+    participant API as Bridge API
+    participant MMsvc as Mobile Money Svc
+    participant Ledger as Ledger Service
+    participant Queue as BullMQ Worker
+    participant Stellar as Stellar Service
+    participant HZN as Horizon / Stellar
+
+    Note over Sender,HZN: 📥 DEPOSIT: Mobile Money → Stellar
+    Sender->>MM: 1. Initiate deposit (USSD/App)
+    MM-->>API: 2. Callback / webhook
+    API->>API: 3. Auth + AML + Sanctions
+    API->>MMsvc: 4. requestPayment(debit)
+    MMsvc->>MM: 5. Debit sender wallet
+    MM-->>MMsvc: 6. Debit confirmed
+    MMsvc->>Ledger: 7. Record + apply fees
+    Ledger->>Ledger: 8. Vault lock + journal entries
+    Ledger->>Queue: 9. Enqueue token mint job
+    Queue->>Stellar: 10. Build + sign Stellar tx
+    Stellar->>HZN: 11. Submit (payment / changeTrust)
+    HZN-->>Stellar: 12. ✅ On-chain (~5s)
+    Stellar->>API: 13. Update tx status → completed
+    API-->>Sender: 14. WebSocket + SMS + Email
+
+    Note over Sender,HZN: 📤 WITHDRAWAL: Stellar → Mobile Money
+    Sender->>API: 15. POST /transactions/withdraw
+    API->>API: 16. JWT + 2FA + KYC tier check
+    API->>Queue: 17. Enqueue burn + payout jobs
+    Queue->>Stellar: 18. Burn / escrow tokens
+    Stellar->>HZN: 19. Submit burn tx
+    HZN-->>Stellar: 20. ✅ Burn confirmed
+    Stellar->>Ledger: 21. Unlock vault funds
+    Ledger->>Queue: 22. Enqueue payout job
+    Queue->>MMsvc: 23. sendPayout(credit)
+    MMsvc->>MM: 24. Credit recipient wallet
+    MM-->>MMsvc: 25. Payout confirmed
+    MMsvc->>API: 26. Reconcile + status
+    API-->>Sender: 27. Notify recipient + sender
+```
 
 ### Tech Stack
 

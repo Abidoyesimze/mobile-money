@@ -25,7 +25,9 @@ import { runDatabaseBackupVerifyJob } from "./databaseBackupVerifyJob";
 import { INDEX_REINDEX_CRON, INDEX_REINDEX_JOB_ENABLED } from "../config/env";
 import { runIndexReindexJob } from "./indexReindexJob";
 import { runSanctionSyncJob } from "./sanctionSyncJob";
+import { runJwtKeyRotationJob } from "./jwtKeyRotationJob";
 import { startNotificationWorker } from "../workers/notificationWorker";
+import { runTravelRuleExportJob } from "../services/compliance/travelRuleExport";
 
 interface JobConfig {
   name: string;
@@ -166,10 +168,23 @@ const JOBS: JobConfig[] = [
     handler: runDatabaseBackupVerifyJob,
   },
   {
+    name: "jwt-key-rotation",
+    // Monthly on the 1st at 3:00 AM — rotates JWT signing key,
+    // old keys remain valid for 24-hour grace period
+    schedule: process.env.JWT_KEY_ROTATION_CRON || "0 3 1 * *",
+    handler: runJwtKeyRotationJob,
+  },
+  {
     name: "sanction-sync",
     // Daily at 1:00 AM - streams and indexes sanctions list updates, clears match cache
     schedule: process.env.SANCTION_SYNC_CRON || "0 1 * * *",
     handler: runSanctionSyncJob,
+  },
+  {
+    name: "travel-rule-export",
+    // Hourly - exports pending Travel Rule compliance records to regulatory reporting endpoints
+    schedule: process.env.TRAVEL_RULE_EXPORT_CRON || "0 * * * *",
+    handler: runTravelRuleExportJob,
   },
 ];
 
