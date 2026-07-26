@@ -49,6 +49,7 @@ import {
 } from "./config/redis";
 import { createOAuthRouter } from "./auth/oauth";
 import { pool } from "./config/database";
+import { getSessionCookieOptions, getSessionTrustProxy } from "./config/session";
 import {
   globalTimeout,
   haltOnTimedout,
@@ -107,6 +108,7 @@ validateStellarNetwork();
 logStellarNetwork();
 
 const app = express();
+app.set("trust proxy", getSessionTrustProxy());
 const PORT = process.env.PORT || 3000;
 const SHUTDOWN_TIMEOUT_MS = parseInt(
   process.env.SHUTDOWN_TIMEOUT_MS || "30000",
@@ -213,11 +215,7 @@ app.use(
     secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
-    cookie: {
-      secure: process.env.NODE_ENV === "production",
-      httpOnly: true,
-      maxAge: SESSION_TTL_SECONDS * 1000,
-    },
+    cookie: getSessionCookieOptions(),
   }),
 );
 app.use(sessionAnomalyLogger);

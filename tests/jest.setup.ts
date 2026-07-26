@@ -102,10 +102,18 @@ try {
 import { connectRedis, disconnectRedis } from "../src/config/redis";
 
 beforeAll(async () => {
+  if (process.env.SKIP_REDIS_SETUP === "true") {
+    return;
+  }
+
   await connectRedis();
 });
 
 afterAll(async () => {
+  if (process.env.SKIP_REDIS_SETUP === "true") {
+    return;
+  }
+
   await disconnectRedis();
 });
 
