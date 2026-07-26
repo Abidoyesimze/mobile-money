@@ -3,9 +3,8 @@ import { Pool, QueryConfig, QueryResult, QueryResultRow, PoolClient } from "pg";
 import { auditService } from "../services/auditlogService";
 import { isReadOnlyQuery } from "../utils/readOnlyDetector";
 import { dbReplicaLagSeconds, dbReplicaReadEnabled } from "../utils/metrics";
-import { IS_SANDBOX, SANDBOX_DATABASE_URL, DATABASE_URL } from "./env";
+import { IS_SANDBOX, SANDBOX_DATABASE_URL, DATABASE_URL, DR_DATABASE_URL } from "./env";
 
-const DR_DATABASE_URL = process.env.DR_DATABASE_URL;
 const isDRMode = (): boolean => !!DR_DATABASE_URL;
 
 const productionSsl =
@@ -27,6 +26,32 @@ const PRIMARY_POOL_RECONNECT_DELAY_MS = parseInt(
 );
 const PRIMARY_POOL_MAX_RETRIES = parseInt(
   process.env.DB_MAX_RETRIES || "3",
+  10,
+);
+const MAX_CONNECTIONS = parseInt(
+  process.env.DB_MAX_CONNECTIONS || "50",
+  10,
+);
+const POOL_MAX_USES = parseInt(
+  process.env.DB_POOL_MAX_USES || "0",
+  10,
+);
+const POOL_ALLOW_EXIT_ON_IDLE =
+  process.env.DB_POOL_ALLOW_EXIT_ON_IDLE === "true";
+const POOL_IDLE_TIMEOUT_MS = parseInt(
+  process.env.DB_POOL_IDLE_TIMEOUT_MS || "15000",
+  10,
+);
+const POOL_CONNECTION_TIMEOUT_MS = parseInt(
+  process.env.DB_POOL_CONNECTION_TIMEOUT_MS || "5000",
+  10,
+);
+const REPLICA_IDLE_TIMEOUT_MS = parseInt(
+  process.env.DB_REPLICA_IDLE_TIMEOUT_MS || "30000",
+  10,
+);
+const REPLICA_CONNECTION_TIMEOUT_MS = parseInt(
+  process.env.DB_REPLICA_CONNECTION_TIMEOUT_MS || "500",
   10,
 );
 
@@ -335,15 +360,7 @@ function schedulePrimaryPoolReconnect(error: unknown): void {
 async function reconnectPrimaryPool(): Promise<void> {
   try {
     const previousPool = pool;
-    const nextPool = new Pool({
-      connectionString: IS_SANDBOX
-        ? SANDBOX_DATABASE_URL || DATABASE_URL
-        : DATABASE_URL,
-      max: 50,
-      idleTimeoutMillis: 15000,
-      connectionTimeoutMillis: 5000,
-      ssl: productionSsl,
-    });
+    const nextPool = new Pool(getPoolOptions());
 
     nextPool.on("error", (err) => {
       logger.error("[Database] Primary pool error", err);
@@ -367,16 +384,30 @@ async function reconnectPrimaryPool(): Promise<void> {
   }
 }
 
-function createPrimaryPool(): Pool {
-  const newPool = new Pool({
+function getPoolOptions(overrides: Partial<{
+  max: number;
+  idleTimeoutMillis: number;
+  connectionTimeoutMillis: number;
+  ssl: boolean | undefined;
+  maxUses: number;
+  allowExitOnIdle: boolean;
+}> = {}): object {
+  return {
     connectionString: IS_SANDBOX
       ? SANDBOX_DATABASE_URL || DATABASE_URL
       : DATABASE_URL,
-    max: 50,
-    idleTimeoutMillis: 15000,
-    connectionTimeoutMillis: 5000,
-    ssl: productionSsl,
-  });
+    max: overrides.max ?? MAX_CONNECTIONS,
+    idleTimeoutMillis: overrides.idleTimeoutMillis ?? POOL_IDLE_TIMEOUT_MS,
+    connectionTimeoutMillis:
+      overrides.connectionTimeoutMillis ?? POOL_CONNECTION_TIMEOUT_MS,
+    ssl: overrides.ssl ?? productionSsl,
+    maxUses: overrides.maxUses ?? POOL_MAX_USES,
+    allowExitOnIdle: overrides.allowExitOnIdle ?? POOL_ALLOW_EXIT_ON_IDLE,
+  };
+}
+
+function createPrimaryPool(): Pool {
+  const newPool = new Pool(getPoolOptions());
 
   newPool.on("error", (err) => {
     logger.error("[Database] Primary pool error", err);
@@ -433,10 +464,12 @@ const replicaPools: Pool[] = replicaUrls.map(
   (url) =>
     new Pool({
       connectionString: url,
-      max: 50,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 500,
+      max: MAX_CONNECTIONS,
+      idleTimeoutMillis: REPLICA_IDLE_TIMEOUT_MS,
+      connectionTimeoutMillis: REPLICA_CONNECTION_TIMEOUT_MS,
       ssl: productionSsl,
+      maxUses: POOL_MAX_USES,
+      allowExitOnIdle: POOL_ALLOW_EXIT_ON_IDLE,
     }),
 );
 
