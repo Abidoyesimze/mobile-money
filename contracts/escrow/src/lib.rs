@@ -1,63 +1,50 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, Vec,
+};
 
 // ── Error types ──────────────────────────────────────────────────────────────
 
-/// Contract-level errors surfaced via the Soroban SDK error-code mechanism.
-/// The `#[contracterror]` attribute generates the required `From<soroban_sdk::Error>`
-/// impl so the generated client exposes `try_*` variants that return
-/// `Result<T, soroban_sdk::Error>` for testing failure paths.
 #[contracterror]
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(u32)]
 pub enum EscrowError {
-    /// Storage key already exists – contract is already initialised.
     AlreadyInitialised = 1,
-    /// Storage key not found – contract has not been initialised yet.
     NotInitialised = 2,
-    /// Funds have already been released or refunded.
     AlreadyReleased = 3,
-    /// The lock time has not yet expired; refund is premature.
     LockNotExpired = 4,
-    /// The lock time has already expired; arbiter release window is closed.
     LockExpired = 5,
-    /// Deposit amount must be strictly positive.
     InvalidAmount = 6,
-    /// Fee basis points must be in [0, 10_000].
     InvalidFeeBps = 7,
-    /// Beneficiary address must differ from depositor.
     InvalidBeneficiary = 8,
-    /// Arbiter address must differ from both depositor and beneficiary.
     InvalidArbiter = 9,
+    UpgradeNotConfigured = 10,
+    InvalidAdminSigner = 11,
+    InsufficientAdminSignatures = 12,
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
 
-/// Persistent on-chain state for a single escrow instance.
 #[contracttype]
 #[derive(Clone)]
 pub struct EscrowState {
-    /// Party that deposited funds and can claim a refund after expiry.
     pub depositor: Address,
-    /// Party that receives funds on successful release.
     pub beneficiary: Address,
-    /// Neutral third party that authorises release / early refund.
     pub arbiter: Address,
-    /// SAC token address.
     pub token: Address,
-    /// Gross amount locked in escrow (before fee deduction).
     pub amount: i128,
     pub emergency_unlock_timestamp: u64,
     pub lock_until_ledger: u32,
     pub fee_bps: u32,
     pub fee_recipient: Address,
     pub released: bool,
+    pub admin_signers: Vec<Address>,
+    pub required_admin_signatures: u32,
 }
 
 impl EscrowState {
-    /// Compute (fee_amount, net_beneficiary_amount).
     pub fn split(&self) -> (i128, i128) {
         let fee = self.amount * self.fee_bps as i128 / 10_000;
         let net = self.amount - fee;
@@ -78,13 +65,6 @@ pub struct EscrowContract;
 impl EscrowContract {
     // ── initialize ────────────────────────────────────────────────────────────
 
-    /// Initialise escrow. The depositor must authorise this call; `amount`
-    /// tokens are pulled from the depositor into the contract.
-    ///
-    /// * `lock_until_ledger` – ledger after which the depositor may self-refund
-    ///   without the arbiter. Pass `0` to disable self-refund entirely.
-    /// * `fee_bps`           – protocol fee in basis points (0–10 000).
-    /// * `fee_recipient`     – receives the fee portion on release.
     pub fn initialize(
         env: Env,
         depositor: Address,
@@ -96,6 +76,8 @@ impl EscrowContract {
         lock_until_ledger: u32,
         fee_bps: u32,
         fee_recipient: Address,
+        admin_signers: Vec<Address>,
+        required_admin_signatures: u32,
     ) {
         depositor.require_auth();
 
@@ -118,7 +100,13 @@ impl EscrowContract {
             "arbiter must differ from depositor and beneficiary"
         );
 
-        // Pull funds from depositor into the contract.
+        if !admin_signers.is_empty() {
+            assert!(
+                required_admin_signatures > 0 && required_admin_signatures <= admin_signers.len(),
+                "required_admin_signatures must be between 1 and number of admin signers"
+            );
+        }
+
         token::Client::new(&env, &token).transfer(
             &depositor,
             env.current_contract_address(),
@@ -138,17 +126,55 @@ impl EscrowContract {
                 fee_bps,
                 fee_recipient,
                 released: false,
+                admin_signers,
+                required_admin_signatures,
             },
         );
 
-        // Extend the TTL of the instance storage to set up state renewal rules
         env.storage().instance().extend_ttl(1000, 10000);
+    }
+
+    // ── upgrade ───────────────────────────────────────────────────────────────
+
+    pub fn upgrade(
+        env: Env,
+        new_wasm_hash: BytesN<32>,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), EscrowError> {
+        let state: EscrowState = env
+            .storage()
+            .instance()
+            .get(&ESCROW)
+            .ok_or(EscrowError::NotInitialised)?;
+
+        if state.admin_signers.is_empty() {
+            return Err(EscrowError::UpgradeNotConfigured);
+        }
+
+        let mut valid_sig_count = 0u32;
+        for signer in admin_signers.iter() {
+            let is_approved = state
+                .admin_signers
+                .iter()
+                .any(|approved| approved == signer);
+            if !is_approved {
+                return Err(EscrowError::InvalidAdminSigner);
+            }
+            signer.require_auth();
+            valid_sig_count += 1;
+        }
+
+        if valid_sig_count < state.required_admin_signatures {
+            return Err(EscrowError::InsufficientAdminSignatures);
+        }
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        Ok(())
     }
 
     // ── release ───────────────────────────────────────────────────────────────
 
-    /// Release funds to the beneficiary (net of fee) and fee to `fee_recipient`.
-    /// Only the arbiter may call this, and only while the lock is still active.
     pub fn release(env: Env) -> Result<(), EscrowError> {
         let mut state: EscrowState = env
             .storage()
@@ -161,7 +187,6 @@ impl EscrowContract {
         if state.released {
             return Err(EscrowError::AlreadyReleased);
         }
-        // Arbiter cannot release after the lock has expired.
         if state.lock_until_ledger > 0 && env.ledger().sequence() > state.lock_until_ledger {
             return Err(EscrowError::LockExpired);
         }
@@ -184,8 +209,6 @@ impl EscrowContract {
 
     // ── refund ────────────────────────────────────────────────────────────────
 
-    /// Return the full `amount` to the depositor.
-    /// Only the arbiter may call this, and only while the lock is still active.
     pub fn refund(env: Env) -> Result<(), EscrowError> {
         let mut state: EscrowState = env
             .storage()
@@ -215,8 +238,6 @@ impl EscrowContract {
         Ok(())
     }
 
-    /// Emergency refund to the depositor after the unlock timestamp.
-    /// Allows source wallets to recover funds during an extended bridge outage.
     pub fn emergency_refund(env: Env) {
         let mut state: EscrowState = env
             .storage()
@@ -243,8 +264,6 @@ impl EscrowContract {
 
     // ── self_refund ───────────────────────────────────────────────────────────
 
-    /// Allow the depositor to reclaim funds *after* the lock has expired,
-    /// without the arbiter. The full `amount` is returned.
     pub fn self_refund(env: Env) -> Result<(), EscrowError> {
         let mut state: EscrowState = env
             .storage()
@@ -257,7 +276,6 @@ impl EscrowContract {
         if state.released {
             return Err(EscrowError::AlreadyReleased);
         }
-        // Time-lock must have passed.
         if state.lock_until_ledger == 0 || env.ledger().sequence() <= state.lock_until_ledger {
             return Err(EscrowError::LockNotExpired);
         }
@@ -276,7 +294,6 @@ impl EscrowContract {
 
     // ── get_state ─────────────────────────────────────────────────────────────
 
-    /// Return current escrow state (read-only).
     pub fn get_state(env: Env) -> EscrowState {
         let state = env
             .storage()
@@ -296,7 +313,7 @@ mod tests {
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
         token::{Client as TokenClient, StellarAssetClient},
-        Address, Env,
+        Address, Bytes, Env,
     };
 
     const MINT_AMOUNT: i128 = 1_000_000;
@@ -350,6 +367,8 @@ mod tests {
         fee_bps: u32,
         fee_recipient: &Address,
     ) {
+        let env = &client.env;
+        let admin_signers: Vec<Address> = Vec::new(env);
         client.initialize(
             depositor,
             beneficiary,
@@ -360,6 +379,8 @@ mod tests {
             &lock_until_ledger,
             &fee_bps,
             fee_recipient,
+            &admin_signers,
+            &0,
         );
     }
 
@@ -375,6 +396,7 @@ mod tests {
 
         env.ledger().set_timestamp(100);
 
+        let admin_signers: Vec<Address> = Vec::new(&env);
         client.initialize(
             &depositor,
             &beneficiary,
@@ -385,6 +407,8 @@ mod tests {
             &100, // lock_until_ledger
             &0,   // fee_bps
             &fee_recipient,
+            &admin_signers,
+            &0,
         );
 
         let state = client.get_state();
@@ -462,6 +486,7 @@ mod tests {
 
         env.ledger().set_timestamp(100);
 
+        let admin_signers: Vec<Address> = Vec::new(&env);
         client.initialize(
             &depositor,
             &beneficiary,
@@ -472,6 +497,8 @@ mod tests {
             &100, // lock_until_ledger
             &0,   // fee_bps
             &fee_recipient,
+            &admin_signers,
+            &0,
         );
         client.refund();
 
@@ -487,6 +514,7 @@ mod tests {
 
         env.ledger().set_timestamp(100);
 
+        let admin_signers: Vec<Address> = Vec::new(&env);
         client.initialize(
             &depositor,
             &beneficiary,
@@ -497,6 +525,8 @@ mod tests {
             &100, // lock_until_ledger
             &0,   // fee_bps
             &fee_recipient,
+            &admin_signers,
+            &0,
         );
 
         env.ledger().set_timestamp(emergency_unlock_timestamp);
@@ -506,5 +536,162 @@ mod tests {
         let token_client = TokenClient::new(&env, &token);
         assert_eq!(token_client.balance(&depositor), MINT_AMOUNT);
         assert!(client.get_state().released);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 2. Upgrade tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_upgrade_happy_path() {
+        let (env, depositor, beneficiary, arbiter, fee_recipient, token, client) = setup();
+        let amount: i128 = 500_000;
+        env.ledger().set_timestamp(100);
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let admin3 = Address::generate(&env);
+
+        let mut admin_signers: Vec<Address> = Vec::new(&env);
+        admin_signers.push_back(admin1.clone());
+        admin_signers.push_back(admin2.clone());
+        admin_signers.push_back(admin3.clone());
+
+        client.initialize(
+            &depositor,
+            &beneficiary,
+            &arbiter,
+            &token,
+            &amount,
+            &1_000,
+            &100,
+            &0,
+            &fee_recipient,
+            &admin_signers,
+            &2,
+        );
+
+        let dummy_wasm = Bytes::new(&env);
+        let new_wasm_hash = env.deployer().upload_contract_wasm(dummy_wasm);
+
+        let mut upgrade_signers: Vec<Address> = Vec::new(&env);
+        upgrade_signers.push_back(admin1);
+        upgrade_signers.push_back(admin2);
+
+        client.upgrade(&new_wasm_hash, &upgrade_signers);
+    }
+
+    #[test]
+    fn test_upgrade_without_admin_config_fails() {
+        let (env, depositor, beneficiary, arbiter, fee_recipient, token, client) = setup();
+        let amount: i128 = 500_000;
+        env.ledger().set_timestamp(100);
+
+        let admin_signers: Vec<Address> = Vec::new(&env);
+        client.initialize(
+            &depositor,
+            &beneficiary,
+            &arbiter,
+            &token,
+            &amount,
+            &1_000,
+            &100,
+            &0,
+            &fee_recipient,
+            &admin_signers,
+            &0,
+        );
+
+        let dummy_wasm = Bytes::new(&env);
+        let new_wasm_hash = env.deployer().upload_contract_wasm(dummy_wasm);
+
+        let upgrade_signers: Vec<Address> = Vec::new(&env);
+        let res = client.try_upgrade(&new_wasm_hash, &upgrade_signers);
+        assert_eq!(res, Err(Ok(EscrowError::UpgradeNotConfigured)));
+    }
+
+    #[test]
+    fn test_upgrade_unapproved_signer_fails() {
+        let (env, depositor, beneficiary, arbiter, fee_recipient, token, client) = setup();
+        let amount: i128 = 500_000;
+        env.ledger().set_timestamp(100);
+
+        let admin1 = Address::generate(&env);
+        let unapproved = Address::generate(&env);
+
+        let mut admin_signers: Vec<Address> = Vec::new(&env);
+        admin_signers.push_back(admin1);
+
+        client.initialize(
+            &depositor,
+            &beneficiary,
+            &arbiter,
+            &token,
+            &amount,
+            &1_000,
+            &100,
+            &0,
+            &fee_recipient,
+            &admin_signers,
+            &1,
+        );
+
+        let dummy_wasm = Bytes::new(&env);
+        let new_wasm_hash = env.deployer().upload_contract_wasm(dummy_wasm);
+
+        let mut upgrade_signers: Vec<Address> = Vec::new(&env);
+        upgrade_signers.push_back(unapproved);
+
+        let res = client.try_upgrade(&new_wasm_hash, &upgrade_signers);
+        assert_eq!(res, Err(Ok(EscrowError::InvalidAdminSigner)));
+    }
+
+    #[test]
+    fn test_upgrade_insufficient_signatures_fails() {
+        let (env, depositor, beneficiary, arbiter, fee_recipient, token, client) = setup();
+        let amount: i128 = 500_000;
+        env.ledger().set_timestamp(100);
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+
+        let mut admin_signers: Vec<Address> = Vec::new(&env);
+        admin_signers.push_back(admin1.clone());
+        admin_signers.push_back(admin2);
+
+        client.initialize(
+            &depositor,
+            &beneficiary,
+            &arbiter,
+            &token,
+            &amount,
+            &1_000,
+            &100,
+            &0,
+            &fee_recipient,
+            &admin_signers,
+            &2,
+        );
+
+        let dummy_wasm = Bytes::new(&env);
+        let new_wasm_hash = env.deployer().upload_contract_wasm(dummy_wasm);
+
+        let mut upgrade_signers: Vec<Address> = Vec::new(&env);
+        upgrade_signers.push_back(admin1);
+
+        let res = client.try_upgrade(&new_wasm_hash, &upgrade_signers);
+        assert_eq!(res, Err(Ok(EscrowError::InsufficientAdminSignatures)));
+    }
+
+    #[test]
+    fn test_upgrade_before_initialize_fails() {
+        let (env, _depositor, _beneficiary, _arbiter, _fee_recipient, _token, client) = setup();
+
+        let dummy_wasm = Bytes::new(&env);
+        let new_wasm_hash = env.deployer().upload_contract_wasm(dummy_wasm);
+
+        let upgrade_signers: Vec<Address> = Vec::new(&env);
+        let res = client.try_upgrade(&new_wasm_hash, &upgrade_signers);
+        assert_eq!(res, Err(Ok(EscrowError::NotInitialised)));
     }
 }
