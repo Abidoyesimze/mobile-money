@@ -114,6 +114,18 @@ import { startApolloServer } from "./graphql/server";
 
 dotenv.config();
 
+logger.info(
+  {
+    datadog: {
+      service: process.env.DD_SERVICE || "mobile-money",
+      env: process.env.DD_ENV || process.env.NODE_ENV || "development",
+      logInjection: true,
+      agentUrl: process.env.DD_TRACE_AGENT_URL || undefined,
+    },
+  },
+  "Datadog tracer initialized",
+);
+
 if (process.env.SENTRY_DSN) {
   initSentry(process.env.SENTRY_DSN, process.env.SENTRY_RELEASE);
 }
