@@ -1,4 +1,15 @@
-export type MobileProvider = "mtn" | "airtel" | "orange";
+import {
+  parsePhoneNumberFromString,
+  type CountryCode,
+} from "libphonenumber-js";
+
+export type MobileProvider = "mtn" | "airtel" | "orange" | "vodacom" | "tigo";
+type PhoneOutputFormat = "e164" | "national";
+
+interface ProviderPhoneFormatConfig {
+  defaultRegion: CountryCode;
+  output: PhoneOutputFormat;
+}
 
 /**
  * Standard mapping of prefixes to Mobile Network Operators.
@@ -8,7 +19,83 @@ const PROVIDER_PREFIXES: Record<MobileProvider, string[]> = {
   mtn: ["23767", "23768", "25677", "25678", "23324", "23354", "23355", "23359"],
   airtel: ["23766", "25670", "25675", "23326", "23356", "23357"],
   orange: ["23765", "23769", "22507", "22177"],
+  vodacom: [
+    "255740",
+    "255762",
+    "255763",
+    "255764",
+    "255765",
+    "255766",
+    "255767",
+    "255768",
+    "255769",
+  ],
+  tigo: [
+    "255713",
+    "255714",
+    "255715",
+    "255716",
+    "255717",
+    "255718",
+    "255719",
+    "255752",
+    "255753",
+    "255754",
+    "255755",
+  ],
 };
+
+const PROVIDER_PHONE_FORMATS: Record<
+  MobileProvider,
+  ProviderPhoneFormatConfig
+> = {
+  mtn: {
+    defaultRegion: "CM",
+    output: "e164",
+  },
+  airtel: {
+    defaultRegion: (process.env.AIRTEL_PHONE_REGION as CountryCode) || "CM",
+    output: "national",
+  },
+  orange: {
+    defaultRegion: "CM",
+    output: "e164",
+  },
+  vodacom: {
+    defaultRegion: "TZ",
+    output: "e164",
+  },
+  tigo: {
+    defaultRegion: "TZ",
+    output: "e164",
+  },
+};
+
+function parseFlexiblePhoneNumber(
+  phoneNumber: string,
+  defaultRegion: CountryCode,
+) {
+  const trimmed = phoneNumber.trim();
+  const digitsOnly = trimmed.replace(/\D/g, "");
+  const candidates = [trimmed];
+
+  if (digitsOnly && !trimmed.startsWith("+")) {
+    candidates.push(`+${digitsOnly}`);
+  }
+
+  if (digitsOnly.startsWith("00")) {
+    candidates.push(`+${digitsOnly.slice(2)}`);
+  }
+
+  for (const candidate of candidates) {
+    const parsed = parsePhoneNumberFromString(candidate, defaultRegion);
+    if (parsed?.isValid()) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
 
 /**
  * Validates if a phone number belongs to the specified provider.
@@ -37,4 +124,28 @@ export function validatePhoneProviderMatch(
   }
 
   return { valid: true };
+}
+
+/**
+ * Format a phone number according to provider-specific payload requirements.
+ * Airtel payouts in particular may require a national-format MSISDN in some
+ * regions, so we normalize user input before building the request payload.
+ */
+export function formatPhoneForProvider(
+  phoneNumber: string,
+  provider: string,
+): string {
+  const targetProvider = provider.toLowerCase() as MobileProvider;
+  const config = PROVIDER_PHONE_FORMATS[targetProvider];
+
+  if (!config) {
+    throw new Error(`Unsupported provider: ${provider}`);
+  }
+
+  const parsed = parseFlexiblePhoneNumber(phoneNumber, config.defaultRegion);
+  if (!parsed) {
+    throw new Error(`Invalid phone number for ${provider}: ${phoneNumber}`);
+  }
+
+  return config.output === "national" ? parsed.nationalNumber : parsed.number;
 }

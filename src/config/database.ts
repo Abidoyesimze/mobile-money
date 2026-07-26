@@ -1,6 +1,17 @@
+import logger from "../utils/logger";
 import { Pool, QueryConfig, QueryResult, QueryResultRow, PoolClient } from "pg";
+import { auditService } from "../services/auditlogService";
 import { isReadOnlyQuery } from "../utils/readOnlyDetector";
+import { dbReplicaLagSeconds, dbReplicaReadEnabled } from "../utils/metrics";
+import { IS_SANDBOX, SANDBOX_DATABASE_URL, DATABASE_URL } from "./env";
 
+const DR_DATABASE_URL = process.env.DR_DATABASE_URL;
+const isDRMode = (): boolean => !!DR_DATABASE_URL;
+
+const productionSsl =
+  process.env.NODE_ENV === "production"
+    ? { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED === "true" }
+    : undefined;
 
 // Configuration for slow query logging
 const SLOW_QUERY_THRESHOLD_MS = parseInt(
@@ -10,6 +21,40 @@ const ENABLE_SLOW_QUERY_LOGGING =
   process.env.ENABLE_SLOW_QUERY_LOGGING === "true" ||
   (process.env.NODE_ENV === "development" &&
     process.env.ENABLE_SLOW_QUERY_LOGGING !== "false");
+const PRIMARY_POOL_RECONNECT_DELAY_MS = parseInt(
+  process.env.DB_RECONNECT_DELAY_MS || "1000",
+  10,
+);
+const PRIMARY_POOL_MAX_RETRIES = parseInt(
+  process.env.DB_MAX_RETRIES || "3",
+  10,
+);
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientDatabaseError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+
+  const candidate = error as { code?: string; message?: string };
+  const code = candidate.code?.toUpperCase() ?? "";
+  const message = candidate.message?.toLowerCase() ?? "";
+
+  return (
+    code === "ECONNRESET" ||
+    code === "ECONNREFUSED" ||
+    code === "ETIMEDOUT" ||
+    code === "57P01" ||
+    code === "08006" ||
+    message.includes("connection terminated") ||
+    message.includes("terminated unexpectedly") ||
+    message.includes("connection lost") ||
+    message.includes("disconnect") ||
+    message.includes("timeout") ||
+    message.includes("socket")
+  );
+}
 
 /**
  * Sanitizes a SQL query by removing sensitive data patterns
@@ -127,49 +172,222 @@ class SlowQueryPool extends Pool {
 }
 
 /**
- * Primary connection pool – now routes through PgBouncer for transaction-level pooling
- * This significantly reduces the number of direct connections to Postgres
- * (INSERT, UPDATE, DELETE) and read operations when no replica is available.
+ * Primary connection pool – now routes through PgBouncer for transaction-level pooling.
+ * It also reconnects gracefully after transient disconnects so request handlers can
+ * continue operating once the database becomes available again.
  */
-export const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    max: 1000,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 500,
+let primaryPoolQuery: (...args: any[]) => Promise<any>;
+let primaryPoolConnect: () => Promise<PoolClient>;
+let isPrimaryPoolReconnecting = false;
+let primaryPoolReconnectAttempt = 0;
+let primaryPoolReconnectPromise: Promise<void> | null = null;
+
+function attachPrimaryPoolRecovery(poolInstance: Pool): void {
+  const originalQuery = poolInstance.query.bind(poolInstance);
+  const originalConnect = poolInstance.connect.bind(poolInstance);
+
+  primaryPoolQuery = originalQuery;
+  primaryPoolConnect = originalConnect;
+
+  const wrappedPool = poolInstance as Pool & {
+    query: (...args: any[]) => Promise<any>;
+    connect: () => Promise<PoolClient>;
+  };
+
+  wrappedPool.query = async (...args: any[]): Promise<any> => {
+    const queryConfig = args[0];
+    const values = args[1];
+    const startTime = process.hrtime.bigint();
+    const queryString =
+      typeof queryConfig === "string" ? queryConfig : (queryConfig?.text ?? "");
+    const queryParams =
+      typeof queryConfig === "string" ? values : queryConfig?.values;
+
+    try {
+      const result = await executeWithRetry(
+        () => primaryPoolQuery(...args),
+        "query",
+      );
+      const endTime = process.hrtime.bigint();
+      const durationMs = Number(endTime - startTime) / 1e6;
+      if (durationMs > SLOW_QUERY_THRESHOLD_MS) {
+        logSlowQuery(queryString, durationMs, queryParams);
+      }
+
+      if (
+        queryString.toUpperCase().includes("FROM USERS") ||
+        queryString.toUpperCase().includes("UPDATE USERS")
+      ) {
+        const isSelect = queryString.toUpperCase().startsWith("SELECT");
+        const isUpdate = queryString.toUpperCase().startsWith("UPDATE");
+
+        if (isSelect || isUpdate) {
+          let targetId = "unknown";
+          if (queryParams && queryParams.length > 0) {
+            targetId = queryParams[queryParams.length - 1];
+          }
+
+          setImmediate(() => {
+            auditService
+              .logPIIAccess({
+                adminId: "system-admin",
+                targetId: String(targetId),
+                resource: "users",
+                metadata: {
+                  query: sanitizeQuery(queryString),
+                  isUpdate,
+                },
+              })
+              .catch((err) =>
+                logger.error("[PII Audit Interceptor] Failed:", err),
+              );
+          });
+        }
+      }
+
+      return result;
+    } catch (error) {
+      const endTime = process.hrtime.bigint();
+      const durationMs = Number(endTime - startTime) / 1e6;
+      if (durationMs > SLOW_QUERY_THRESHOLD_MS) {
+        logSlowQuery(queryString, durationMs, queryParams);
+      }
+      throw error;
+    }
+  };
+
+  wrappedPool.connect = async (): Promise<PoolClient> => {
+    return executeWithRetry(() => primaryPoolConnect(), "connect");
+  };
+}
+
+async function verifyPrimaryPoolHealth(): Promise<void> {
+  if (!primaryPoolQuery) return;
+  await primaryPoolQuery("SELECT 1");
+}
+
+async function ensurePrimaryPoolReady(): Promise<void> {
+  if (!primaryPoolReconnectPromise) return;
+  await primaryPoolReconnectPromise;
+}
+
+async function executeWithRetry<T>(
+  operation: () => Promise<T>,
+  operationName: string,
+): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < PRIMARY_POOL_MAX_RETRIES; attempt += 1) {
+    try {
+      if (isPrimaryPoolReconnecting) {
+        await delay(PRIMARY_POOL_RECONNECT_DELAY_MS);
+        await verifyPrimaryPoolHealth();
+      }
+
+      return await operation();
+    } catch (error) {
+      lastError = error;
+
+      if (!isTransientDatabaseError(error) || attempt === PRIMARY_POOL_MAX_RETRIES - 1) {
+        throw error;
+      }
+
+      logger.warn(
+        `[Database] ${operationName} failed, retrying in ${PRIMARY_POOL_RECONNECT_DELAY_MS}ms`,
+        error,
+      );
+      schedulePrimaryPoolReconnect(error);
+      await delay(PRIMARY_POOL_RECONNECT_DELAY_MS);
+      await ensurePrimaryPoolReady();
+      await verifyPrimaryPoolHealth();
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function schedulePrimaryPoolReconnect(error: unknown): void {
+  if (primaryPoolReconnectPromise) return;
+
+  isPrimaryPoolReconnecting = true;
+  primaryPoolReconnectAttempt += 1;
+  const reconnectDelayMs = Math.min(
+    5000,
+    PRIMARY_POOL_RECONNECT_DELAY_MS * primaryPoolReconnectAttempt,
+  );
+
+  logger.warn(
+    `[Database] Primary pool disconnected, attempting reconnect in ${reconnectDelayMs}ms`,
+    error,
+  );
+
+  primaryPoolReconnectPromise = new Promise((resolve) => {
+    setTimeout(() => {
+      void reconnectPrimaryPool().finally(() => {
+        primaryPoolReconnectPromise = null;
+        isPrimaryPoolReconnecting = false;
+        resolve();
+      });
+    }, reconnectDelayMs);
+  });
+}
+
+async function reconnectPrimaryPool(): Promise<void> {
+  try {
+    const previousPool = pool;
+    const nextPool = new Pool({
+      connectionString: IS_SANDBOX
+        ? SANDBOX_DATABASE_URL || DATABASE_URL
+        : DATABASE_URL,
+      max: 50,
+      idleTimeoutMillis: 15000,
+      connectionTimeoutMillis: 5000,
+      ssl: productionSsl,
+    });
+
+    nextPool.on("error", (err) => {
+      logger.error("[Database] Primary pool error", err);
+      schedulePrimaryPoolReconnect(err);
+    });
+
+    attachPrimaryPoolRecovery(nextPool);
+    await verifyPrimaryPoolHealth();
+
+    pool = nextPool;
+    await previousPool.end();
+    primaryPoolReconnectAttempt = 0;
+    logger.info("[Database] Primary pool reconnected successfully");
+  } catch (error) {
+    logger.error("[Database] Primary pool reconnect failed", error);
+    setTimeout(() => {
+      void reconnectPrimaryPool();
+    }, PRIMARY_POOL_RECONNECT_DELAY_MS * 2);
+  } finally {
+    isPrimaryPoolReconnecting = false;
+  }
+}
+
+function createPrimaryPool(): Pool {
+  const newPool = new Pool({
+    connectionString: IS_SANDBOX
+      ? SANDBOX_DATABASE_URL || DATABASE_URL
+      : DATABASE_URL,
+    max: 50,
+    idleTimeoutMillis: 15000,
+    connectionTimeoutMillis: 5000,
+    ssl: productionSsl,
   });
 
-// Wrap query for slow-query logging while preserving Pool typings.
-const originalPoolQuery = pool.query.bind(pool);
-(pool as Pool & { query: (...args: any[]) => Promise<any> }).query = async (
-  ...args: any[]
-): Promise<any> => {
-  const queryConfig = args[0];
-  const values = args[1];
-  const startTime = process.hrtime.bigint();
-  const queryString =
-    typeof queryConfig === "string" ? queryConfig : queryConfig?.text ?? "";
-  const queryParams =
-    typeof queryConfig === "string" ? values : queryConfig?.values;
+  newPool.on("error", (err) => {
+    logger.error("[Database] Primary pool error", err);
+    schedulePrimaryPoolReconnect(err);
+  });
 
-  try {
-    const result = await (originalPoolQuery as (...callArgs: any[]) => Promise<any>)(
-      ...args,
-    );
-    const endTime = process.hrtime.bigint();
-    const durationMs = Number(endTime - startTime) / 1e6;
-    if (durationMs > SLOW_QUERY_THRESHOLD_MS) {
-      logSlowQuery(queryString, durationMs, queryParams);
-    }
-    return result;
-  } catch (error) {
-    const endTime = process.hrtime.bigint();
-    const durationMs = Number(endTime - startTime) / 1e6;
-    if (durationMs > SLOW_QUERY_THRESHOLD_MS) {
-      logSlowQuery(queryString, durationMs, queryParams);
-    }
-    throw error;
-  }
-};
+  attachPrimaryPoolRecovery(newPool);
+  return newPool;
+}
+
+export let pool: Pool = createPrimaryPool();
 
 /**
  * Read replica connection pool – handles SELECT queries to take load off the
@@ -182,30 +400,116 @@ const replicaUrls: string[] = process.env.READ_REPLICA_URL
   ? process.env.READ_REPLICA_URL.split(",").map((url) => url.trim())
   : [];
 
-// Build an individual Pool for each replica URL
-  const replicaPools: Pool[] = replicaUrls.map(
-    (url) =>
-      new Pool({
-        connectionString: url,
-        max: 50,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 500,
-      }),
+const REPLICA_SYNC_LAG_THRESHOLD_SECONDS = (() => {
+  const threshold = parseFloat(
+    process.env.REPLICA_SYNC_LAG_THRESHOLD_SECONDS || "5",
   );
+  return Number.isFinite(threshold) ? threshold : 5;
+})();
+const REPLICA_LAG_MONITOR_INTERVAL_MS = (() => {
+  const interval = parseInt(
+    process.env.REPLICA_LAG_MONITOR_INTERVAL_MS || "10000",
+    10,
+  );
+  return Number.isFinite(interval) && interval > 0 ? interval : 10000;
+})();
+
+type ReplicaStatus = {
+  url: string;
+  enabled: boolean;
+  healthy: boolean;
+  lagSeconds: number | null;
+};
+
+const replicaStatuses: ReplicaStatus[] = replicaUrls.map((url) => ({
+  url,
+  enabled: true,
+  healthy: true,
+  lagSeconds: null,
+}));
+
+// Build an individual Pool for each replica URL
+const replicaPools: Pool[] = replicaUrls.map(
+  (url) =>
+    new Pool({
+      connectionString: url,
+      max: 50,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 500,
+      ssl: productionSsl,
+    }),
+);
 
 // Track which replica to use next for round-robin load balancing
 let replicaIndex = 0;
+
+function getActiveReplicaIndices(): number[] {
+  return replicaStatuses
+    .map((status, idx) => ({ status, idx }))
+    .filter(({ status }) => status.enabled && status.healthy)
+    .map(({ idx }) => idx);
+}
 
 /**
  * Return the next replica pool in round-robin order.
  * Returns null if no replica pools are configured.
  */
 function getNextReplicaPool(): Pool | null {
-  if (replicaPools.length === 0) return null;
-  const selected = replicaPools[replicaIndex % replicaPools.length];
+  const activeIndices = getActiveReplicaIndices();
+  if (activeIndices.length === 0) return null;
+  const selectedIndex = activeIndices[replicaIndex % activeIndices.length];
   replicaIndex += 1;
-  return selected;
+  return replicaPools[selectedIndex];
 }
+
+async function refreshReplicaStatus(idx: number): Promise<void> {
+  const url = replicaUrls[idx];
+  let healthy = false;
+  let lagSeconds: number | null = null;
+  let client: PoolClient | null = null;
+
+  try {
+    client = await replicaPools[idx].connect();
+    const query = `
+      SELECT CASE
+        WHEN pg_is_in_recovery() THEN EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))
+        ELSE 0
+      END AS lag_seconds
+    `;
+    const result = await client.query<{ lag_seconds: number | null }>(query);
+    lagSeconds = result.rows?.[0]?.lag_seconds ?? null;
+    healthy = true;
+  } catch (error) {
+    healthy = false;
+    lagSeconds = null;
+    console.warn(`Replica health check failed for ${url}:`, error);
+  } finally {
+    client?.release();
+  }
+
+  const enabled =
+    healthy &&
+    lagSeconds !== null &&
+    lagSeconds <= REPLICA_SYNC_LAG_THRESHOLD_SECONDS;
+  replicaStatuses[idx] = { url, enabled, healthy, lagSeconds };
+
+  dbReplicaLagSeconds.labels(url).set(lagSeconds ?? 0);
+  dbReplicaReadEnabled.labels(url).set(enabled ? 1 : 0);
+}
+
+async function refreshAllReplicaStatuses(): Promise<void> {
+  await Promise.all(replicaUrls.map((_, idx) => refreshReplicaStatus(idx)));
+}
+
+function startReplicaLagMonitor(): void {
+  if (replicaUrls.length === 0) return;
+  void refreshAllReplicaStatuses();
+  setInterval(() => {
+    void refreshAllReplicaStatuses();
+  }, REPLICA_LAG_MONITOR_INTERVAL_MS);
+}
+
+startReplicaLagMonitor();
 
 /**
  * Execute a read-only SQL query against a replica pool if available.
@@ -242,7 +546,6 @@ export async function queryRead<T extends import("pg").QueryResultRow = any>(
 /**
  * Execute a write SQL query (INSERT / UPDATE / DELETE) against the primary pool.
  * All writes now route through PgBouncer via the primary pool connection.
- * In DR failover mode (DR_DATABASE_URL set) writes go to the promoted replica.
  *
  * @param text   - The parameterised SQL query string
  * @param params - Optional query parameters
@@ -251,61 +554,7 @@ export async function queryWrite<T extends import("pg").QueryResultRow = any>(
   text: string,
   params?: unknown[],
 ): Promise<import("pg").QueryResult<T>> {
-  return getWritePool().query<T>(text, params);
-}
-// When DR_DATABASE_URL is set the app is running in failover mode against the
-// promoted DR replica. All writes are redirected there automatically.
-// To activate: set DR_DATABASE_URL=<promoted-replica-url> and restart the app.
-// To deactivate: unset DR_DATABASE_URL and restart.
-
-const DR_DATABASE_URL = process.env.DR_DATABASE_URL;
-
-const drPool: Pool | null = DR_DATABASE_URL
-  ? new Pool({
-      connectionString: DR_DATABASE_URL,
-      max: 20,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
-    })
-  : null;
-
-if (drPool) {
-  console.warn(
-    "[DR] DR_DATABASE_URL is set — all writes are routed to the DR replica. " +
-    "Ensure the replica has been promoted before accepting traffic.",
-  );
-}
-
-/**
- * Returns true when the application is running in DR failover mode.
- */
-export function isDRMode(): boolean {
-  return drPool !== null;
-}
-
-/**
- * Health-check the DR pool. Returns null when DR mode is not active.
- */
-export async function checkDRHealth(): Promise<{ healthy: boolean; url: string } | null> {
-  if (!drPool || !DR_DATABASE_URL) return null;
-  let client: PoolClient | null = null;
-  try {
-    client = await drPool.connect();
-    await client.query("SELECT 1");
-    return { healthy: true, url: DR_DATABASE_URL };
-  } catch {
-    return { healthy: false, url: DR_DATABASE_URL };
-  } finally {
-    client?.release();
-  }
-}
-
-/**
- * Active write pool — returns the DR pool when in failover mode, otherwise primary.
- * Use this for all write operations so failover is transparent.
- */
-export function getWritePool(): Pool {
-  return drPool ?? pool;
+  return pool.query<T>(text, params);
 }
 
 /**
@@ -313,20 +562,43 @@ export function getWritePool(): Pool {
  * Returns an array of status objects – useful for monitoring endpoints.
  */
 export async function checkReplicaHealth(): Promise<
-  { url: string; healthy: boolean }[]
+  {
+    url: string;
+    healthy: boolean;
+    enabled: boolean;
+    lagSeconds: number | null;
+  }[]
 > {
   return Promise.all(
     replicaUrls.map(async (url, idx) => {
       let client: PoolClient | null = null;
+      let healthy = false;
+      let lagSeconds: number | null = null;
+
       try {
         client = await replicaPools[idx].connect();
-        await client.query("SELECT 1");
-        return { url, healthy: true };
+        const query = `
+          SELECT CASE
+            WHEN pg_is_in_recovery() THEN EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))
+            ELSE 0
+          END AS lag_seconds
+        `;
+        const result = await client.query<{ lag_seconds: number | null }>(
+          query,
+        );
+        lagSeconds = result.rows?.[0]?.lag_seconds ?? null;
+        healthy = true;
       } catch {
-        return { url, healthy: false };
+        healthy = false;
       } finally {
         client?.release();
       }
+
+      const enabled =
+        healthy &&
+        lagSeconds !== null &&
+        lagSeconds <= REPLICA_SYNC_LAG_THRESHOLD_SECONDS;
+      return { url, healthy, enabled, lagSeconds };
     }),
   );
 }
@@ -364,7 +636,9 @@ export async function getPgBouncerStats(): Promise<{
   try {
     // Query PgBouncer stats database (special admin database)
     const pgbouncerPool = new Pool({
-      connectionString: process.env.PGBOUNCER_ADMIN_URL || "postgresql://user:password@localhost:6432/pgbouncer",
+      connectionString:
+        process.env.PGBOUNCER_ADMIN_URL ||
+        "postgresql://user:password@localhost:6432/pgbouncer",
     });
 
     const result = await pgbouncerPool.query(
@@ -377,8 +651,10 @@ export async function getPgBouncerStats(): Promise<{
     return {
       activeConnections: parseInt(row.sv_active || 0),
       idleConnections: parseInt(row.sv_idle || 0),
-      totalConnections: (parseInt(row.sv_active || 0) + parseInt(row.sv_idle || 0)),
-      clientConnections: (parseInt(row.cl_active || 0) + parseInt(row.cl_idle || 0)),
+      totalConnections:
+        parseInt(row.sv_active || 0) + parseInt(row.sv_idle || 0),
+      clientConnections:
+        parseInt(row.cl_active || 0) + parseInt(row.cl_idle || 0),
     };
   } catch (err) {
     console.warn("Failed to get PgBouncer stats:", err);
@@ -389,4 +665,91 @@ export async function getPgBouncerStats(): Promise<{
       clientConnections: 0,
     };
   }
+}
+
+/**
+ * Context-aware query function that respects HTTP method-based routing decisions.
+ *
+ * This function is designed to work with the readReplicaRoutingMiddleware.
+ * It routes queries based on:
+ * 1. HTTP method context (if provided) - GET requests go to replica
+ * 2. SQL query type (fallback) - SELECT queries go to replica
+ *
+ * Usage in route handlers:
+ *   const result = await queryWithContext(req, "SELECT * FROM users", []);
+ *
+ * @param req - Express Request object (with dbRouting context from middleware)
+ * @param text - SQL query string
+ * @param params - Query parameters
+ * @returns Query result
+ */
+export async function queryWithContext<
+  T extends import("pg").QueryResultRow = any,
+>(
+  req: any,
+  text: string,
+  params?: unknown[],
+): Promise<import("pg").QueryResult<T>> {
+  // Check for HTTP method-based routing context
+  if (req?.dbRouting?.useReplicaPool) {
+    return queryRead<T>(text, params);
+  }
+
+  // Fall back to SQL query-based routing
+  return querySmart<T>(text, params);
+}
+
+/**
+ * Batch query execution with request context.
+ * Executes multiple queries with proper pool routing based on HTTP method.
+ *
+ * All read operations (GET) use replica, all writes use primary.
+ *
+ * @param req - Express Request object
+ * @param queries - Array of { text, params } query configurations
+ * @returns Array of query results
+ */
+export async function queryBatchWithContext<
+  T extends import("pg").QueryResultRow = any,
+>(
+  req: any,
+  queries: Array<{ text: string; params?: unknown[] }>,
+): Promise<import("pg").QueryResult<T>[]> {
+  const results: import("pg").QueryResult<T>[] = [];
+
+  for (const query of queries) {
+    const result = await queryWithContext<T>(req, query.text, query.params);
+    results.push(result);
+  }
+
+  return results;
+}
+
+/**
+ * Get database pool statistics combining primary and replica metrics.
+ * Useful for monitoring and health check endpoints.
+ */
+export async function getPoolStats(): Promise<{
+  primary: {
+    mode: "normal" | "failover";
+    url: string;
+    description: string;
+  };
+  replicas: Array<{
+    url: string;
+    healthy: boolean;
+  }>;
+}> {
+  const replicaStats = await checkReplicaHealth();
+
+  return {
+    primary: {
+      mode: isDRMode() ? "failover" : "normal",
+      url: DR_DATABASE_URL || process.env.DATABASE_URL || "",
+      description: isDRMode()
+        ? "Running in DR failover mode - writes redirected to promoted replica"
+        : "Primary database - all critical writes",
+    },
+    replicas: replicaStats,
+  };
 }

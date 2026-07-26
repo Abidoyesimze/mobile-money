@@ -1,12 +1,14 @@
+import logger from "../utils/logger";
 import type { Application, Request } from "express";
 import { ApolloServer } from "apollo-server-express";
 import {
   ApolloServerPluginLandingPageGraphQLPlayground,
   ApolloServerPluginLandingPageProductionDefault,
 } from "apollo-server-core";
+// @ts-expect-error ESM module
 import { makeExecutableSchema } from "@graphql-tools/schema";
 import { WebSocketServer } from "ws";
-import { useServer } from "graphql-ws/dist/use/ws";
+import { useServer } from "graphql-ws/use/ws";
 import { typeDefs } from "./schema";
 import { resolvers, subscriptionResolvers } from "./resolvers";
 import { buildGraphqlContext } from "./context";
@@ -55,8 +57,9 @@ export async function startApolloServer(
 
     validationRules: [
       depthLimit(5),
+      // Enforce strict query complexity limit of 500 points per request
       createComplexityRule({
-        maximumComplexity: 1000,
+        maximumComplexity: 500,
         estimators: [
           fieldExtensionsEstimator(),
           simpleEstimator({ defaultComplexity: 1 }),
@@ -116,16 +119,23 @@ export async function startApolloServer(
 
         if (apiKeyRequired) {
           if (!token) {
-            console.warn("[WS] Rejected unauthenticated connection — no authToken");
+            console.warn(
+              "[WS] Rejected unauthenticated connection — no authToken",
+            );
             return false; // graphql-ws closes the connection
           }
           try {
             const claims = verifyToken(String(token));
             // Attach claims to context so subscription resolvers can access them
             ctx.extra.jwtClaims = claims;
-            console.log(`[WS] Authenticated connection for user ${claims.userId}`);
+            console.log(
+              `[WS] Authenticated connection for user ${claims.userId}`,
+            );
           } catch (err) {
-            console.warn("[WS] Rejected connection — invalid token:", (err as Error).message);
+            console.warn(
+              "[WS] Rejected connection — invalid token:",
+              (err as Error).message,
+            );
             return false;
           }
         }
@@ -136,7 +146,7 @@ export async function startApolloServer(
         console.log("WebSocket subscription disconnected");
       },
       onError: (_ctx: any, err: any) => {
-        console.error("WebSocket subscription error:", err);
+        logger.error("WebSocket subscription error:", err);
       },
     },
     wsServer,

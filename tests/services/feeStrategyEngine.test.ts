@@ -19,8 +19,14 @@ jest.mock("../../src/config/redis", () => ({
   },
 }));
 
+jest.mock("../../src/utils/fees", () => ({
+  getThirtyDayVolume: jest.fn().mockResolvedValue(0),
+  mapVolumeToTier: jest.fn().mockReturnValue({ discountPercent: 0 }),
+}));
+
 import { pool } from "../../src/config/database";
 import { redisClient } from "../../src/config/redis";
+import { getThirtyDayVolume, mapVolumeToTier } from "../../src/utils/fees";
 import {
   FeeStrategyEngine,
   FeeStrategy,
@@ -29,13 +35,15 @@ import {
 
 const mockPool = pool as jest.Mocked<typeof pool>;
 const mockRedis = redisClient as jest.Mocked<typeof redisClient>;
+const mockGetThirtyDayVolume = getThirtyDayVolume as jest.Mock;
+const mockMapVolumeToTier = mapVolumeToTier as jest.Mock;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ADMIN_ID = "00000000-0000-0000-0000-000000000001";
-const USER_ID  = "00000000-0000-0000-0000-000000000002";
+const USER_ID = "00000000-0000-0000-0000-000000000002";
 
 function makeStrategy(overrides: Partial<FeeStrategy> = {}): FeeStrategy {
   return {
@@ -106,19 +114,27 @@ describe("FeeStrategyEngine", () => {
 
   describe("PercentageFeeStrategy", () => {
     it("calculates percentage fee correctly", async () => {
-      const strategy = makeStrategy({ feePercentage: 1.5, feeMinimum: 50, feeMaximum: 5000 });
+      const strategy = makeStrategy({
+        feePercentage: 1.5,
+        feeMinimum: 50,
+        feeMaximum: 5000,
+      });
       mockPool.query.mockResolvedValueOnce(pgResult([strategy]) as any);
 
       const result = await engine.calculateFee({ amount: 10_000 });
 
-      expect(result.fee).toBe(150);          // 10000 * 1.5% = 150
+      expect(result.fee).toBe(150); // 10000 * 1.5% = 150
       expect(result.total).toBe(10_150);
       expect(result.strategyUsed).toBe("Test Strategy");
       expect(result.scopeUsed).toBe("global");
     });
 
     it("clamps fee to minimum", async () => {
-      const strategy = makeStrategy({ feePercentage: 0.1, feeMinimum: 100, feeMaximum: 5000 });
+      const strategy = makeStrategy({
+        feePercentage: 0.1,
+        feeMinimum: 100,
+        feeMaximum: 5000,
+      });
       mockPool.query.mockResolvedValueOnce(pgResult([strategy]) as any);
 
       const result = await engine.calculateFee({ amount: 100 }); // 100 * 0.1% = 0.1 → clamped to 100
@@ -128,7 +144,11 @@ describe("FeeStrategyEngine", () => {
     });
 
     it("clamps fee to maximum", async () => {
-      const strategy = makeStrategy({ feePercentage: 10, feeMinimum: 0, feeMaximum: 500 });
+      const strategy = makeStrategy({
+        feePercentage: 10,
+        feeMinimum: 0,
+        feeMaximum: 500,
+      });
       mockPool.query.mockResolvedValueOnce(pgResult([strategy]) as any);
 
       const result = await engine.calculateFee({ amount: 100_000 }); // 100000 * 10% = 10000 → clamped to 500
@@ -142,7 +162,11 @@ describe("FeeStrategyEngine", () => {
 
   describe("FlatFeeStrategy", () => {
     it("returns fixed fee regardless of amount", async () => {
-      const strategy = makeStrategy({ strategyType: "flat", flatAmount: 250, feePercentage: undefined });
+      const strategy = makeStrategy({
+        strategyType: "flat",
+        flatAmount: 250,
+        feePercentage: undefined,
+      });
       mockPool.query.mockResolvedValueOnce(pgResult([strategy]) as any);
 
       const result = await engine.calculateFee({ amount: 50_000 });
@@ -169,9 +193,14 @@ describe("FeeStrategyEngine", () => {
         feePercentage: undefined,
       });
       const fallback = makeStrategy({ priority: 100 });
-      mockPool.query.mockResolvedValueOnce(pgResult([timeStrategy, fallback]) as any);
+      mockPool.query.mockResolvedValueOnce(
+        pgResult([timeStrategy, fallback]) as any,
+      );
 
-      const result = await engine.calculateFee({ amount: 10_000, evaluationTime: FRIDAY });
+      const result = await engine.calculateFee({
+        amount: 10_000,
+        evaluationTime: FRIDAY,
+      });
 
       expect(result.fee).toBe(0);
       expect(result.timeOverrideActive).toBe(true);
@@ -189,11 +218,16 @@ describe("FeeStrategyEngine", () => {
         feePercentage: undefined,
       });
       const fallback = makeStrategy({ name: "Standard 1.5%", priority: 100 });
-      mockPool.query.mockResolvedValueOnce(pgResult([timeStrategy, fallback]) as any);
+      mockPool.query.mockResolvedValueOnce(
+        pgResult([timeStrategy, fallback]) as any,
+      );
 
-      const result = await engine.calculateFee({ amount: 10_000, evaluationTime: SATURDAY });
+      const result = await engine.calculateFee({
+        amount: 10_000,
+        evaluationTime: SATURDAY,
+      });
 
-      expect(result.fee).toBe(150);          // fallback 1.5%
+      expect(result.fee).toBe(150); // fallback 1.5%
       expect(result.timeOverrideActive).toBe(false);
       expect(result.strategyUsed).toBe("Standard 1.5%");
     });
@@ -213,14 +247,24 @@ describe("FeeStrategyEngine", () => {
 
       // 08:00 UTC — before window
       const beforeWindow = new Date("2026-04-24T08:00:00Z");
-      mockPool.query.mockResolvedValueOnce(pgResult([timeStrategy, fallback]) as any);
-      const resultBefore = await engine.calculateFee({ amount: 10_000, evaluationTime: beforeWindow });
+      mockPool.query.mockResolvedValueOnce(
+        pgResult([timeStrategy, fallback]) as any,
+      );
+      const resultBefore = await engine.calculateFee({
+        amount: 10_000,
+        evaluationTime: beforeWindow,
+      });
       expect(resultBefore.fee).toBe(150); // fallback
 
       // 12:00 UTC — inside window
       const insideWindow = new Date("2026-04-24T12:00:00Z");
-      mockPool.query.mockResolvedValueOnce(pgResult([timeStrategy, fallback]) as any);
-      const resultInside = await engine.calculateFee({ amount: 10_000, evaluationTime: insideWindow });
+      mockPool.query.mockResolvedValueOnce(
+        pgResult([timeStrategy, fallback]) as any,
+      );
+      const resultInside = await engine.calculateFee({
+        amount: 10_000,
+        evaluationTime: insideWindow,
+      });
       expect(resultInside.fee).toBe(0);
     });
   });
@@ -232,8 +276,8 @@ describe("FeeStrategyEngine", () => {
       strategyType: "volume_based",
       feePercentage: undefined,
       volumeTiers: [
-        { minAmount: 0,       maxAmount: 100_000, feePercentage: 1.5 },
-        { minAmount: 100_000, maxAmount: null,    feePercentage: 0.8 },
+        { minAmount: 0, maxAmount: 100_000, feePercentage: 1.5 },
+        { minAmount: 100_000, maxAmount: null, feePercentage: 0.8 },
       ],
     });
 
@@ -253,9 +297,13 @@ describe("FeeStrategyEngine", () => {
       const emptyTierStrategy = makeStrategy({
         strategyType: "volume_based",
         feePercentage: undefined,
-        volumeTiers: [{ minAmount: 500_000, maxAmount: null, feePercentage: 0.5 }],
+        volumeTiers: [
+          { minAmount: 500_000, maxAmount: null, feePercentage: 0.5 },
+        ],
       });
-      mockPool.query.mockResolvedValueOnce(pgResult([emptyTierStrategy]) as any);
+      mockPool.query.mockResolvedValueOnce(
+        pgResult([emptyTierStrategy]) as any,
+      );
       const result = await engine.calculateFee({ amount: 100 }); // below all tiers
       expect(result.fee).toBe(0);
     });
@@ -281,11 +329,16 @@ describe("FeeStrategyEngine", () => {
       });
 
       // Engine orders: user first, then global
-      mockPool.query.mockResolvedValueOnce(pgResult([userStrategy, globalStrategy]) as any);
+      mockPool.query.mockResolvedValueOnce(
+        pgResult([userStrategy, globalStrategy]) as any,
+      );
 
-      const result = await engine.calculateFee({ amount: 10_000, userId: USER_ID });
+      const result = await engine.calculateFee({
+        amount: 10_000,
+        userId: USER_ID,
+      });
 
-      expect(result.fee).toBe(50);           // 10000 * 0.5%
+      expect(result.fee).toBe(50); // 10000 * 0.5%
       expect(result.scopeUsed).toBe("user");
       expect(result.strategyUsed).toBe("User 0.5%");
     });
@@ -306,11 +359,16 @@ describe("FeeStrategyEngine", () => {
         feePercentage: 1.0,
       });
 
-      mockPool.query.mockResolvedValueOnce(pgResult([providerStrategy, globalStrategy]) as any);
+      mockPool.query.mockResolvedValueOnce(
+        pgResult([providerStrategy, globalStrategy]) as any,
+      );
 
-      const result = await engine.calculateFee({ amount: 10_000, provider: "orange" });
+      const result = await engine.calculateFee({
+        amount: 10_000,
+        provider: "orange",
+      });
 
-      expect(result.fee).toBe(100);          // 10000 * 1%
+      expect(result.fee).toBe(100); // 10000 * 1%
       expect(result.scopeUsed).toBe("provider");
     });
 
@@ -338,11 +396,17 @@ describe("FeeStrategyEngine", () => {
         feePercentage: 0.2,
       });
 
-      mockPool.query.mockResolvedValueOnce(pgResult([userStrategy, providerStrategy, globalStrategy]) as any);
+      mockPool.query.mockResolvedValueOnce(
+        pgResult([userStrategy, providerStrategy, globalStrategy]) as any,
+      );
 
-      const result = await engine.calculateFee({ amount: 10_000, userId: USER_ID, provider: "orange" });
+      const result = await engine.calculateFee({
+        amount: 10_000,
+        userId: USER_ID,
+        provider: "orange",
+      });
 
-      expect(result.fee).toBe(20);           // 10000 * 0.2%
+      expect(result.fee).toBe(20); // 10000 * 0.2%
       expect(result.scopeUsed).toBe("user");
     });
 
@@ -362,11 +426,13 @@ describe("FeeStrategyEngine", () => {
       });
 
       // DB returns them already ordered by priority ASC
-      mockPool.query.mockResolvedValueOnce(pgResult([highPriority, lowPriority]) as any);
+      mockPool.query.mockResolvedValueOnce(
+        pgResult([highPriority, lowPriority]) as any,
+      );
 
       const result = await engine.calculateFee({ amount: 10_000 });
 
-      expect(result.fee).toBe(50);           // 10000 * 0.5%
+      expect(result.fee).toBe(50); // 10000 * 0.5%
       expect(result.strategyUsed).toBe("High Priority 0.5%");
     });
   });
@@ -509,6 +575,65 @@ describe("FeeStrategyEngine", () => {
 
       expect(mockRedis.keys).toHaveBeenCalledWith("fee_strategies:*");
       expect(mockRedis.del).toHaveBeenCalled();
+    });
+  });
+
+  // ── VIP Fee Discounts ──────────────────────────────────────────────────────
+
+  describe("VIP Fee Discounts", () => {
+    it("applies VIP discount to strategy fee when user has volume", async () => {
+      const strategy = makeStrategy({
+        name: "Standard 2%",
+        scope: "global",
+        priority: 100,
+        feePercentage: 2.0,
+        feeMinimum: 50,
+        feeMaximum: 5000,
+      });
+
+      mockPool.query.mockResolvedValueOnce(pgResult([strategy]) as any);
+      mockGetThirtyDayVolume.mockResolvedValueOnce(1500); // qualifies for tier/discount
+      mockMapVolumeToTier.mockReturnValueOnce({ discountPercent: 10 }); // 10% discount
+
+      // 10,000 * 2% = 200 fee. With 10% discount, 200 * 0.9 = 180 fee.
+      const result = await engine.calculateFee({
+        amount: 10_000,
+        userId: USER_ID,
+      });
+
+      expect(result.fee).toBe(180);
+      expect(result.total).toBe(10180);
+      expect(result.breakdown.clampedFee).toBe(180);
+      expect(result.breakdown.rawFee).toBe(180);
+    });
+
+    it("applies VIP discount to minimum fee if minimum is triggered", async () => {
+      const strategy = makeStrategy({
+        name: "Standard 2% with Min 100",
+        scope: "global",
+        priority: 100,
+        feePercentage: 2.0,
+        feeMinimum: 100,
+        feeMaximum: 5000,
+      });
+
+      mockPool.query.mockResolvedValueOnce(pgResult([strategy]) as any);
+      mockGetThirtyDayVolume.mockResolvedValueOnce(1500);
+      mockMapVolumeToTier.mockReturnValueOnce({ discountPercent: 10 });
+
+      // Amount: 1,000. 1,000 * 2% = 20 (raw). Min: 100.
+      // With 10% discount:
+      // Discounted raw: 20 * 0.9 = 18.
+      // Discounted min: 100 * 0.9 = 90.
+      // Since discounted raw (18) < discounted min (90), final fee is 90.
+      const result = await engine.calculateFee({
+        amount: 1000,
+        userId: USER_ID,
+      });
+
+      expect(result.fee).toBe(90);
+      expect(result.total).toBe(1090);
+      expect(result.breakdown.appliedMinimum).toBe(90);
     });
   });
 });

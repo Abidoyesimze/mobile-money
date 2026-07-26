@@ -469,7 +469,7 @@ describe("GitHub Actions Workflow Validation", () => {
 
       // Verify test step exists
       const testStep = testJob.steps.find(
-        (step: any) => step.run && step.run.includes("test"),
+        (step: any) => step.run && step.run.includes("npm run test"),
       );
 
       expect(testStep).toBeDefined();
@@ -595,7 +595,9 @@ describe("GitHub Actions Workflow Validation", () => {
       );
 
       expect(notifyStep).toBeDefined();
-      expect(notifyStep.if).toBe("failure() && steps.check_secrets.outputs.credentials_available == 'true'");
+      expect(notifyStep.if).toBe(
+        "failure() && steps.check_secrets.outputs.credentials_available == 'true'",
+      );
 
       // Verify notification includes diagnostic information
       expect(notifyStep.run).toContain("logs");

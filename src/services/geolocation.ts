@@ -1,5 +1,7 @@
+import logger from "../utils/logger";
 import axios from "axios";
 import { redisClient } from "../config/redis";
+import { Request, Response, NextFunction } from "express";
 
 /**
  * GeolocationService
@@ -23,6 +25,8 @@ export interface LocationMetadata {
   countryCode: string;
   city: string;
   isp: string;
+  lat: number;
+  lon: number;
   status: "resolved" | "unknown" | "pending";
 }
 
@@ -31,6 +35,8 @@ export const UNKNOWN_LOCATION: LocationMetadata = {
   countryCode: "XX",
   city: "Unknown",
   isp: "Unknown",
+  lat: 0,
+  lon: 0,
   status: "unknown",
 };
 
@@ -66,14 +72,17 @@ export function isRoutableIp(ip: string): boolean {
 }
 
 // In-memory fallback cache when Redis is unavailable
-const memoryCache = new Map<string, { data: LocationMetadata; expiresAt: number }>();
+const memoryCache = new Map<
+  string,
+  { data: LocationMetadata; expiresAt: number }
+>();
 
 async function cacheGet(key: string): Promise<LocationMetadata | null> {
   try {
     if (redisClient.isOpen) {
       const raw = await redisClient.get(key);
       if (!raw) return null;
-      const rawStr = typeof raw === 'string' ? raw : raw.toString();
+      const rawStr = typeof raw === "string" ? raw : raw.toString();
       return JSON.parse(rawStr) as LocationMetadata;
     }
   } catch {
@@ -88,13 +97,18 @@ async function cacheGet(key: string): Promise<LocationMetadata | null> {
 async function cacheSet(key: string, value: LocationMetadata): Promise<void> {
   try {
     if (redisClient.isOpen) {
-      await redisClient.set(key, JSON.stringify(value), { EX: CACHE_TTL_SECONDS });
+      await redisClient.set(key, JSON.stringify(value), {
+        EX: CACHE_TTL_SECONDS,
+      });
       return;
     }
   } catch {
     // fall through to memory cache
   }
-  memoryCache.set(key, { data: value, expiresAt: Date.now() + CACHE_TTL_SECONDS * 1000 });
+  memoryCache.set(key, {
+    data: value,
+    expiresAt: Date.now() + CACHE_TTL_SECONDS * 1000,
+  });
 }
 
 export class GeolocationService {
@@ -117,8 +131,8 @@ export class GeolocationService {
     // 2. API call
     try {
       const url = API_KEY
-        ? `${API_BASE}/${ip}?key=${API_KEY}&fields=status,country,countryCode,city,isp`
-        : `${API_BASE}/${ip}?fields=status,country,countryCode,city,isp`;
+        ? `${API_BASE}/${ip}?key=${API_KEY}&fields=status,country,countryCode,city,isp,lat,lon`
+        : `${API_BASE}/${ip}?fields=status,country,countryCode,city,isp,lat,lon`;
 
       const { data } = await axios.get<{
         status: string;
@@ -126,6 +140,8 @@ export class GeolocationService {
         countryCode?: string;
         city?: string;
         isp?: string;
+        lat?: number;
+        lon?: number;
         message?: string;
       }>(url, { timeout: API_TIMEOUT_MS });
 
@@ -142,6 +158,8 @@ export class GeolocationService {
         countryCode: data.countryCode || "XX",
         city: data.city || "Unknown",
         isp: data.isp || "Unknown",
+        lat: data.lat || 0,
+        lon: data.lon || 0,
         status: "resolved",
       };
 
@@ -149,10 +167,51 @@ export class GeolocationService {
       return result;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error("[GeolocationService] lookup failed", { ip: anonIp, error: message });
+      logger.error("[GeolocationService] lookup failed", {
+        ip: anonIp,
+        error: message,
+      });
       return { ...UNKNOWN_LOCATION };
     }
   }
 }
 
 export const geolocationService = new GeolocationService();
+
+// Allowed country codes for admin routes
+const ALLOWED_ADMIN_COUNTRIES = (
+  process.env.ALLOWED_ADMIN_COUNTRIES || "US,GB,CA"
+).split(",");
+
+export const geofenceAdminMiddleware = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  const ip =
+    (req.headers["x-forwarded-for"] as string) ||
+    req.socket.remoteAddress ||
+    "";
+  const firstIp = ip.split(",")[0].trim();
+
+  // Localhost is generally allowed in dev
+  if (firstIp === "127.0.0.1" || firstIp === "::1" || !isRoutableIp(firstIp)) {
+    return next();
+  }
+
+  const location = await geolocationService.lookup(firstIp);
+
+  if (
+    location.status === "resolved" &&
+    ALLOWED_ADMIN_COUNTRIES.includes(location.countryCode)
+  ) {
+    return next();
+  }
+
+  logger.warn("[geofenceAdminMiddleware] Blocked unauthorized access attempt", {
+    ip: anonymizeIp(firstIp),
+    countryCode: location.countryCode,
+  });
+
+  res.status(403).json({ error: "Access denied from your location" });
+};

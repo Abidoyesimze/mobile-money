@@ -1,4 +1,9 @@
+import logger from "../utils/logger";
 import axios from "axios";
+import {
+  exchangeRateBufferService,
+  BufferedRate,
+} from "./exchangeRateBufferService";
 
 // ---------------------------------------------------------------------------
 // Supported currencies
@@ -13,6 +18,8 @@ export const SUPPORTED_CURRENCIES = [
   "TZS",
   "ZMW",
   "RWF",
+  "GNF",
+  "MGA",
 ] as const;
 
 export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
@@ -69,6 +76,8 @@ const FALLBACK_RATES: ExchangeRates = {
   TZS: 2600, // Tanzanian Shilling
   ZMW: 27, // Zambian Kwacha
   RWF: 1320, // Rwandan Franc
+  GNF: 8500, // Guinean Franc
+  MGA: 4500, // Malagasy Ariary
 };
 
 // ---------------------------------------------------------------------------
@@ -93,7 +102,7 @@ export class CurrencyService {
 
     this.refreshTimer = setInterval(() => {
       this.fetchRates().catch((err: Error) => {
-        console.error(
+        logger.error(
           "[CurrencyService] Scheduled rate refresh failed:",
           err.message,
         );
@@ -153,6 +162,64 @@ export class CurrencyService {
   /** Convenience: convert any supported currency to the base currency (USD). */
   convertToBase(amount: number, currency: SupportedCurrency): ConversionResult {
     return this.convert(amount, currency, BASE_CURRENCY);
+  }
+
+  /**
+   * Convert with a provider-specific buffer applied to protect against
+   * exchange rate volatility. The buffer is resolved from the
+   * exchange_rate_buffers table.
+   *
+   * @param amount    Amount in the source currency
+   * @param from      Source currency
+   * @param to        Target currency
+   * @param provider  Mobile money provider slug (e.g. 'mtn', 'airtel')
+   * @param direction 'sell' = user sells `from` for `to` (platform buys)
+   *                  'buy'  = user buys `from` with `to` (platform sells)
+   */
+  async convertWithBuffer(
+    amount: number,
+    from: SupportedCurrency,
+    to: SupportedCurrency,
+    provider: string,
+    direction: "sell" | "buy" = "sell",
+  ): Promise<ConversionResult & { buffer: BufferedRate }> {
+    if (amount < 0) throw new Error("Amount must be non-negative");
+
+    const rawResult = this.convert(amount, from, to);
+    const buffer = await exchangeRateBufferService.applyBuffer(
+      rawResult.rate,
+      provider,
+      from,
+      to,
+      direction,
+    );
+
+    const convertedAmount = amount * buffer.bufferedRate;
+
+    return {
+      originalAmount: amount,
+      originalCurrency: from,
+      convertedAmount: Math.round(convertedAmount * 1e7) / 1e7,
+      baseCurrency: to,
+      rate: buffer.bufferedRate,
+      buffer,
+    };
+  }
+
+  /** Convenience: convert to base currency with buffer applied. */
+  async convertToBaseWithBuffer(
+    amount: number,
+    currency: SupportedCurrency,
+    provider: string,
+    direction: "sell" | "buy" = "sell",
+  ): Promise<ConversionResult & { buffer: BufferedRate }> {
+    return this.convertWithBuffer(
+      amount,
+      currency,
+      BASE_CURRENCY,
+      provider,
+      direction,
+    );
   }
 
   /** Return snapshot of cache state for health checks. */
@@ -231,12 +298,12 @@ export class CurrencyService {
       const message = (err as Error).message;
       if (this.cache) {
         // Stale cache is better than fallback — keep it and warn
-        console.error(
+        logger.error(
           `[CurrencyService] Rate refresh failed (keeping cached rates): ${message}`,
         );
       } else {
         // First load failed — use static fallbacks so the service stays usable
-        console.error(
+        logger.error(
           `[CurrencyService] Initial rate fetch failed (using fallback rates): ${message}`,
         );
         this.cache = { rates: FALLBACK_RATES, fetchedAt: new Date() };

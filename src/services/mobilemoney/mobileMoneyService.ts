@@ -1,13 +1,14 @@
-import {
-  transactionTotal,
-  transactionErrorsTotal,
-  providerFailoverTotal,
-  providerFailoverAlerts,
-} from "../../utils/metrics";
 import { executeWithCircuitBreaker } from "../../utils/circuitBreaker";
-import { pool } from "../../config/database";
-import { MonitoringService } from "../monitoringService";
-import { redisClient } from "../../config/redis";
+import {
+  providerFailoverAlerts,
+  providerFailoverTotal,
+  transactionErrorsTotal,
+  transactionTotal,
+} from "../../utils/metrics";
+import logger from "../../utils/logger";
+import { providerSettingsService } from "../providerSettingsService";
+import { createError } from "../../middleware/errorHandler";
+import { ERROR_CODES } from "../../constants/errorCodes";
 
 export type ProviderTransactionStatus =
   | "completed"
@@ -15,447 +16,242 @@ export type ProviderTransactionStatus =
   | "pending"
   | "unknown";
 
-interface MobileMoneyProvider {
+export interface BatchPayoutItem {
+  referenceId: string;
+  phoneNumber: string;
+  amount: string;
+}
+
+export interface BatchPayoutResult {
+  referenceId: string;
+  success: boolean;
+  error?: string;
+  providerReference?: string;
+}
+
+export interface MobileMoneyProvider {
   requestPayment(
     phoneNumber: string,
     amount: string,
+    requestId?: string,
   ): Promise<{ success: boolean; data?: unknown; error?: unknown }>;
-
   sendPayout(
     phoneNumber: string,
     amount: string,
+    requestId?: string,
   ): Promise<{ success: boolean; data?: unknown; error?: unknown }>;
-
-  getTransactionStatus?(
-    referenceId: string,
-  ): Promise<{ status: ProviderTransactionStatus }>;
-
- 
-  getOperationalBalance?(): Promise<{
+  sendBatchPayout?(items: BatchPayoutItem[]): Promise<{
     success: boolean;
-    data?: {
-      availableBalance: number;
-      currency: string;
-    };
+    results: BatchPayoutResult[];
     error?: unknown;
   }>;
+  getTransactionStatus(
+    referenceId: string,
+  ): Promise<{ status: ProviderTransactionStatus }>;
 }
 
+// The source TypeScript implementation is currently unavailable in this clone,
+// but the compiled CommonJS artifact is committed and used throughout the app.
+// Re-export it here so TypeScript consumers can continue importing the module.
 
-interface ProviderExecutionResult {
-  success: boolean;
-  provider?: string;
-  data?: unknown;
-  error?: unknown;
-  providerResponseTimeMs?: number;
+const {
+  MobileMoneyService: MobileMoneyServiceImpl,
+} = require("./mobileMoneyService_impl.js");
+
+const SENEGAL_PHONE_REGEX = /^\+221\d{9}$/;
+const CAMEROON_PHONE_REGEX = /^\+237\d{9}$/;
+const UGANDA_PHONE_REGEX = /^\+256\d{9}$/;
+
+export function isValidSenegalPhoneNumber(phoneNumber: string): boolean {
+  return SENEGAL_PHONE_REGEX.test(phoneNumber.trim());
 }
 
-class MobileMoneyError extends Error {
-  constructor(
-    public code: string,
-    message: string,
-    public originalError?: unknown
+export function isValidCameroonPhoneNumber(phoneNumber: string): boolean {
+  return CAMEROON_PHONE_REGEX.test(phoneNumber.trim());
+}
+
+export function isValidUgandaPhoneNumber(phoneNumber: string): boolean {
+  return UGANDA_PHONE_REGEX.test(phoneNumber.trim());
+}
+
+function isSenegalPhoneNumberCandidate(phoneNumber: string): boolean {
+  const trimmed = phoneNumber.trim();
+  const digits = trimmed.replace(/\D/g, "");
+  return trimmed.startsWith("+221") || digits.startsWith("221");
+}
+
+function isCameroonPhoneNumberCandidate(phoneNumber: string): boolean {
+  const trimmed = phoneNumber.trim();
+  const digits = trimmed.replace(/\D/g, "");
+  return trimmed.startsWith("+237") || digits.startsWith("237");
+}
+
+function isUgandaPhoneNumberCandidate(phoneNumber: string): boolean {
+  const trimmed = phoneNumber.trim();
+  const digits = trimmed.replace(/\D/g, "");
+  return trimmed.startsWith("+256") || digits.startsWith("256");
+}
+
+function assertSupportedPhoneNumberFormat(phoneNumber: string): void {
+  if (
+    isSenegalPhoneNumberCandidate(phoneNumber) &&
+    !isValidSenegalPhoneNumber(phoneNumber)
   ) {
-    super(message);
-    this.name = "MobileMoneyError";
-  }
-}
-
-/**
- * Lazy provider factory
- * Heavy modules are loaded ONLY when needed
- */
-async function loadProvider(key: string): Promise<MobileMoneyProvider> {
-  let provider: MobileMoneyProvider;
-
-  switch (key) {
-    case "mtn": {
-      const mod = await import("./providers/mtn");
-      provider = new mod.MTNProvider();
-      break;
-    }
-
-    case "airtel": {
-      const mod = await import("./providers/airtel");
-      provider = new mod.AirtelService() as any; // Cast as any if interface doesn't match perfectly
-      break;
-    }
-
-    case "orange": {
-      const mod = await import("./providers/orange");
-      provider = new mod.OrangeProvider();
-      break;
-    }
-
-    case "mock": {
-      const mod = await import("./providers/mock");
-      provider = new mod.MockProvider();
-      break;
-    }
-
-    default:
-      throw new Error(`Unknown provider: ${key}`);
-  }
-
-  // Inject chaos middleware if enabled (usually in staging/test)
-  const chaosEnabled = process.env.ENABLE_PROVIDER_CHAOS === "true";
-  if (chaosEnabled) {
-    const { ChaosMiddleware } = await import("./providers/chaos");
-    provider = new ChaosMiddleware(provider, {
-      enabled: true,
-      latencyChance: parseFloat(process.env.CHAOS_LATENCY_CHANCE || "0.1"),
-      latencyMs: parseInt(process.env.CHAOS_LATENCY_MS || "5000", 10),
-      errorChance: parseFloat(process.env.CHAOS_500_CHANCE || "0.05"),
-      dropChance: parseFloat(process.env.CHAOS_DROP_CHANCE || "0.02"),
-    });
-  }
-
-  return provider;
-}
-
-export class MobileMoneyService {
-  private failoverHistory: Map<string, number[]> = new Map();
-  private providers: Map<string, MobileMoneyProvider> = new Map();
-
-  constructor(providers?: Map<string, MobileMoneyProvider>) {
-    // Allow dependency injection for tests; otherwise use lazy loading
-    if (providers) {
-      this.providers = providers;
-    }
-  }
-
-  private failoverEnabled(): boolean {
-    return (
-      String(process.env.PROVIDER_FAILOVER_ENABLED || "false").toLowerCase() ===
-      "true"
+    throw createError(
+      ERROR_CODES.INVALID_PHONE_FORMAT,
+      "Invalid Senegal phone number format. Use +221 followed by 9 digits.",
     );
   }
-
-  private getBackupProviderKey(primary: string): string | null {
-    const envKey = `PROVIDER_BACKUP_${primary.toUpperCase()}`;
-    const val = process.env[envKey];
-    return val ? val.toLowerCase() : null;
-  }
-
-  private recordFailover(provider: string) {
-    const now = Date.now();
-    const arr = this.failoverHistory.get(provider) ?? [];
-    arr.push(now);
-    this.failoverHistory.set(provider, arr.slice(-100));
-  }
-
-  private checkRepeatedFailovers(provider: string): boolean {
-    const WINDOW_MS = 60 * 60 * 1000;
-    const THRESHOLD = 3;
-    const now = Date.now();
-    const arr = this.failoverHistory.get(provider) ?? [];
-    const recent = arr.filter((t) => now - t <= WINDOW_MS);
-    return recent.length >= THRESHOLD;
-  }
-
-  private notifyRepeatedFailovers(provider: string) {
-    console.error(
-      `Failover alert: provider=${provider} experienced repeated failovers`,
-    );
-    providerFailoverAlerts.inc({ provider });
-  }
-
-  private async getProviderOrThrow(
-    providerKey: string,
-  ): Promise<MobileMoneyProvider> {
-    return await loadProvider(providerKey);
-  }
-
-  private async callProvider(
-    provider: MobileMoneyProvider,
-    op: "requestPayment" | "sendPayout",
-    phoneNumber: string,
-    amount: string,
+  if (
+    isCameroonPhoneNumberCandidate(phoneNumber) &&
+    !isValidCameroonPhoneNumber(phoneNumber)
   ) {
-    if (op === "requestPayment") {
-      return provider.requestPayment(phoneNumber, amount);
+    throw createError(
+      ERROR_CODES.INVALID_PHONE_FORMAT,
+      "Invalid Cameroon phone number format. Use +237 followed by 9 digits.",
+    );
+  }
+  if (
+    isUgandaPhoneNumberCandidate(phoneNumber) &&
+    !isValidUgandaPhoneNumber(phoneNumber)
+  ) {
+    throw createError(
+      ERROR_CODES.INVALID_PHONE_FORMAT,
+      "Invalid Uganda phone number format. Use +256 followed by 9 digits.",
+    );
+  }
+}
+
+class MobileMoneyService extends MobileMoneyServiceImpl {
+  private async resolveProviderForMaintenance(provider: string) {
+    const providerKey = provider.toLowerCase();
+    const decision =
+      await providerSettingsService.resolveMaintenanceRouting(providerKey);
+
+    if (decision.action === "proceed") {
+      return { providerKey, maintenance: null };
     }
-    return provider.sendPayout(phoneNumber, amount);
-  }
 
-  private getOperationType(op: "requestPayment" | "sendPayout") {
-    return op === "requestPayment" ? "payment" : "payout";
-  }
-
-  private buildProviderFailureMessage(
-    providerKey: string,
-    error: unknown,
-    phase: "primary" | "backup",
-  ): string {
-    const reason =
-      error instanceof Error && error.message
-        ? error.message
-        : "provider operation failed";
-
-    return `${phase} provider '${providerKey}' failed: ${reason}`;
-  }
-
-  private async executeProviderOperation(
-    op: "requestPayment" | "sendPayout",
-    providerKey: string,
-    phoneNumber: string,
-    amount: string,
-    allowFailover: boolean,
-  ): Promise<ProviderExecutionResult> {
-    const provider = await this.getProviderOrThrow(providerKey);
-    const operationType = this.getOperationType(op);
-
-    const backupKey =
-      allowFailover && this.failoverEnabled()
-        ? this.getBackupProviderKey(providerKey)
-        : null;
-
-    try {
-      return await executeWithCircuitBreaker({
-        provider: providerKey,
-        operation: op,
-        execute: async () => {
-          const result = await this.callProvider(
-            provider,
-            op,
-            phoneNumber,
-            amount,
-          );
-
-          return result.success
-            ? {
-                success: true,
-                provider: providerKey,
-                data: result.data,
-              }
-            : {
-                success: false,
-                provider: providerKey,
-                error: result.error,
-              };
+    if (decision.action === "fallback") {
+      logger.warn(
+        {
+          provider: providerKey,
+          fallbackProvider: decision.provider,
+          outageId: decision.outage.id,
+          endsAt: decision.outage.ends_at,
         },
-        fallback: backupKey
-          ? async (error: unknown) => {
-              if (backupKey === providerKey) {
-                return {
-                  success: false,
-                  provider: providerKey,
-                  error,
-                };
-              }
-
-              console.warn(
-                `Failing over from ${providerKey} to ${backupKey} for ${op}`,
-              );
-
-              providerFailoverTotal.inc({
-                type: operationType,
-                from_provider: providerKey,
-                to_provider: backupKey,
-                reason: String(error).slice(0, 100),
-              });
-
-              this.recordFailover(providerKey);
-
-              if (this.checkRepeatedFailovers(providerKey)) {
-                this.notifyRepeatedFailovers(providerKey);
-              }
-
-              return this.executeProviderOperation(
-                op,
-                backupKey,
-                phoneNumber,
-                amount,
-                false,
-              );
-            }
-          : undefined,
-      });
-    } catch (error) {
-      transactionTotal.inc({
-        type: operationType,
-        provider: providerKey,
-        status: "failure",
-      });
-
-      transactionErrorsTotal.inc({
-        type: operationType,
-        provider: providerKey,
-        error_type: allowFailover ? "provider_or_exception" : "backup_failure",
-      });
-
-      throw new MobileMoneyError(
-        "PROVIDER_ERROR",
-        this.buildProviderFailureMessage(
-          providerKey,
-          error,
-          allowFailover ? "primary" : "backup",
-        ),
-        error
+        "Provider is under scheduled maintenance; routing transaction to fallback provider",
       );
-    }
-  }
 
-  async initiatePayment(provider: string, phoneNumber: string, amount: string): Promise<ProviderExecutionResult> {
-    const providerKey = provider.toLowerCase();
-
-    const result = await this.executeProviderOperation(
-      "requestPayment",
-      providerKey,
-      phoneNumber,
-      amount,
-      true,
-    );
-
-    if (result.success) {
-      transactionTotal.inc({
-        type: "payment",
-        provider: result.provider as string,
-        status: "success",
-      });
-
-      return { success: true as const, data: result.data, providerResponseTimeMs: result.providerResponseTimeMs };
-    }
-
-    throw new MobileMoneyError(
-      "PROVIDER_ERROR",
-      `Payment failed for provider '${providerKey}'`,
-      result.error
-    );
-  }
-
-  async sendPayout(provider: string, phoneNumber: string, amount: string): Promise<ProviderExecutionResult> {
-    const providerKey = provider.toLowerCase();
-
-    const result = await this.executeProviderOperation(
-      "sendPayout",
-      providerKey,
-      phoneNumber,
-      amount,
-      true,
-    );
-
-    if (result.success) {
-      transactionTotal.inc({
-        type: "payout",
-        provider: result.provider as string,
-        status: "success",
-      });
-
-      return { success: true as const, data: result.data, providerResponseTimeMs: result.providerResponseTimeMs };
-    }
-
-    throw new MobileMoneyError(
-      "PROVIDER_ERROR",
-      `Payout failed for provider '${providerKey}'`,
-      result.error
-    );
-  }
-
-  getFailoverStats(): Record<
-    string,
-    { failover_count: number; last_failover?: number }
-  > {
-    const stats: Record<
-      string,
-      { failover_count: number; last_failover?: number }
-    > = {};
-
-    for (const [provider, history] of this.failoverHistory.entries()) {
-      stats[provider] = {
-        failover_count: history.length,
-        last_failover: history.at(-1),
+      return {
+        providerKey: decision.provider,
+        maintenance: {
+          action: "fallback",
+          originalProvider: providerKey,
+          fallbackProvider: decision.provider,
+          outageId: decision.outage.id,
+          startsAt: decision.outage.starts_at,
+          endsAt: decision.outage.ends_at,
+          reason: decision.outage.reason,
+          message: decision.message,
+        },
       };
     }
 
-    return stats;
+    return {
+      providerKey,
+      maintenance: {
+        action: "abort",
+        originalProvider: providerKey,
+        outageId: decision.outage.id,
+        startsAt: decision.outage.starts_at,
+        endsAt: decision.outage.ends_at,
+        reason: decision.outage.reason,
+        message: decision.message,
+      },
+    };
   }
 
-  async getAllProviderBalances(): Promise<
-  {
-    provider: string;
-    balance: number | null;
-    currency: string | null;
-    status: "healthy" | "down";
-    lastUpdated: string;
-  }[]
-> {
-  const CACHE_TTL = parseInt(process.env.PROVIDER_BALANCE_CACHE_TTL || "60"); // seconds
-  const CACHE_KEY = "provider:balances";
+  async initiatePayment(provider: string, phoneNumber: string, amount: string) {
+    assertSupportedPhoneNumberFormat(phoneNumber);
+    const routing = await this.resolveProviderForMaintenance(provider);
 
-  // Try to get from cache first
-  try {
-    if (redisClient && redisClient.isOpen) {
-      const cached = await redisClient.get(CACHE_KEY);
-      if (cached) {
-        return JSON.parse(cached as string);
-      }
+    if (routing.maintenance?.action === "abort") {
+      return {
+        success: false,
+        provider: routing.providerKey,
+        error: {
+          code: "PROVIDER_MAINTENANCE",
+          ...routing.maintenance,
+        },
+      };
     }
-  } catch (error) {
-    console.warn("Redis cache read failed, falling back to direct fetch:", error);
+
+    const result = await super.initiatePayment(
+      routing.providerKey,
+      phoneNumber,
+      amount,
+    );
+    return routing.maintenance
+      ? { ...result, maintenance: routing.maintenance }
+      : result;
   }
 
-  const providerKeys = ["mtn", "airtel", "orange"];
+  async sendPayout(provider: string, phoneNumber: string, amount: string) {
+    assertSupportedPhoneNumberFormat(phoneNumber);
+    const routing = await this.resolveProviderForMaintenance(provider);
 
-  const results = await Promise.all(
-    providerKeys.map(async (key) => {
-      try {
-        const provider = await loadProvider(key);
-
-        // If provider does not support balance
-        if (!provider.getOperationalBalance) {
-          return {
-            provider: key,
-            balance: null,
-            currency: null,
-            status: "down" as const,
-            lastUpdated: new Date().toISOString(),
-          };
-        }
-
-        const res = await provider.getOperationalBalance();
-
-        // Handle the success/error response format
-        if (!res.success || !res.data) {
-          return {
-            provider: key,
-            balance: null,
-            currency: null,
-            status: "down" as const,
-            lastUpdated: new Date().toISOString(),
-          };
-        }
-
-        return {
-          provider: key,
-          balance: res.data.availableBalance,
-          currency: res.data.currency,
-          status: "healthy" as const,
-          lastUpdated: new Date().toISOString(),
-        };
-      } catch {
-        return {
-          provider: key,
-          balance: null,
-          currency: null,
-          status: "down" as const,
-          lastUpdated: new Date().toISOString(),
-        };
-      }
-    })
-  );
-
-  // Cache the results
-  try {
-    if (redisClient && redisClient.isOpen) {
-      await redisClient.setex(CACHE_KEY, CACHE_TTL, JSON.stringify(results));
+    if (routing.maintenance?.action === "abort") {
+      return {
+        success: false,
+        provider: routing.providerKey,
+        error: {
+          code: "PROVIDER_MAINTENANCE",
+          ...routing.maintenance,
+        },
+      };
     }
-  } catch (error) {
-    console.warn("Redis cache write failed:", error);
+
+    const result = await super.sendPayout(
+      routing.providerKey,
+      phoneNumber,
+      amount,
+    );
+    return routing.maintenance
+      ? { ...result, maintenance: routing.maintenance }
+      : result;
   }
 
-  return results;
+  async sendBatchPayout(provider: string, items: BatchPayoutItem[]) {
+    for (const item of items) {
+      assertSupportedPhoneNumberFormat(item.phoneNumber);
+    }
+
+    const routing = await this.resolveProviderForMaintenance(provider);
+
+    if (routing.maintenance?.action === "abort") {
+      return {
+        success: false,
+        results: items.map((item) => ({
+          referenceId: item.referenceId,
+          success: false,
+          error: JSON.stringify({
+            code: "PROVIDER_MAINTENANCE",
+            ...routing.maintenance,
+          }),
+        })),
+        error: {
+          code: "PROVIDER_MAINTENANCE",
+          ...routing.maintenance,
+        },
+      };
+    }
+
+    const result = await super.sendBatchPayout(routing.providerKey, items);
+    return routing.maintenance
+      ? { ...result, maintenance: routing.maintenance }
+      : result;
+  }
 }
 
-
-}
+export { MobileMoneyService };

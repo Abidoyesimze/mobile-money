@@ -1,3 +1,4 @@
+import logger from "../utils/logger";
 import { Job, Worker } from "bullmq";
 import { runProviderBalanceAlertJob } from "../jobs/balances";
 import { queueOptions } from "./config";
@@ -6,8 +7,10 @@ import {
   PROVIDER_BALANCE_ALERT_QUEUE_NAME,
   ProviderBalanceAlertJobData,
 } from "./providerBalanceAlertQueue";
+import { traceIdFromJob, childLoggerWithTrace } from "./trace";
 
-let providerBalanceAlertWorker: Worker<ProviderBalanceAlertJobData> | null = null;
+let providerBalanceAlertWorker: Worker<ProviderBalanceAlertJobData> | null =
+  null;
 
 export function startProviderBalanceAlertWorker(): void {
   if (providerBalanceAlertWorker) {
@@ -17,7 +20,12 @@ export function startProviderBalanceAlertWorker(): void {
   providerBalanceAlertWorker = new Worker<ProviderBalanceAlertJobData>(
     PROVIDER_BALANCE_ALERT_QUEUE_NAME,
     async (job: Job<ProviderBalanceAlertJobData>) => {
-      console.log(`[${PROVIDER_BALANCE_ALERT_JOB_NAME}] Running job ${job.id}`);
+      const log = childLoggerWithTrace(
+        job.data as unknown as Record<string, unknown>,
+      );
+      (log ?? console).info(
+        `[${PROVIDER_BALANCE_ALERT_JOB_NAME}] Running job ${job.id}`,
+      );
       await runProviderBalanceAlertJob();
     },
     {
@@ -31,7 +39,7 @@ export function startProviderBalanceAlertWorker(): void {
   });
 
   providerBalanceAlertWorker.on("failed", (job, error) => {
-    console.error(
+    logger.error(
       `[${PROVIDER_BALANCE_ALERT_JOB_NAME}] Failed job ${job?.id}:`,
       error.message,
     );

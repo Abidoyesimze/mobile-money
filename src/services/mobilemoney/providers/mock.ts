@@ -1,30 +1,48 @@
-import { MobileMoneyProvider, ProviderTransactionStatus } from "../mobileMoneyService";
+import {
+  MobileMoneyProvider,
+  ProviderTransactionStatus,
+} from "../mobileMoneyService";
+import logger from "../../../utils/logger";
+import { maskPII } from "../../../utils/masking";
 
 export class MockProvider implements MobileMoneyProvider {
-  async requestPayment(phoneNumber: string, amount: string) {
-    console.log(`[MockProvider] Requesting payment: ${amount} from ${phoneNumber}`);
+  async requestPayment(
+    phoneNumber: string,
+    amount: string,
+    requestId?: string,
+  ) {
+    const log = requestId ? logger.child({ requestId }) : logger;
+    log.info(
+      maskPII({ phoneNumber, amount }),
+      "MockProvider: Requesting payment",
+    );
     return {
       success: true,
       data: {
         transactionId: `mock-pay-${Date.now()}`,
         status: "PENDING",
       },
+      providerResponseTimeMs: 0,
     };
   }
 
-  async sendPayout(phoneNumber: string, amount: string) {
-    console.log(`[MockProvider] Sending payout: ${amount} to ${phoneNumber}`);
+  async sendPayout(phoneNumber: string, amount: string, requestId?: string) {
+    const log = requestId ? logger.child({ requestId }) : logger;
+    log.info(maskPII({ phoneNumber, amount }), "MockProvider: Sending payout");
     return {
       success: true,
       data: {
         transactionId: `mock-payout-${Date.now()}`,
         status: "SUCCESSFUL",
       },
+      providerResponseTimeMs: 0,
     };
   }
 
-  async getTransactionStatus(referenceId: string): Promise<{ status: ProviderTransactionStatus }> {
-    console.log(`[MockProvider] Checking status for: ${referenceId}`);
+  async getTransactionStatus(
+    referenceId: string,
+  ): Promise<{ status: ProviderTransactionStatus }> {
+    logger.info(maskPII({ referenceId }), "MockProvider: Checking status");
     return { status: "completed" };
   }
 }

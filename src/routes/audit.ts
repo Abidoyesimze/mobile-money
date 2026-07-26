@@ -8,6 +8,9 @@ import {
   reviewAmlAlert,
   searchAmlAlertsByUser,
   getAmlDashboardStats,
+  markAlertForSAR,
+  getTransactionRejections,
+  getTransactionRejectionStats,
 } from "../controllers/amlAuditController";
 
 export const auditRoutes = Router();
@@ -63,4 +66,31 @@ auditRoutes.patch(
   haltOnTimedout,
   authorizeObj("aml_alerts", "write"),
   reviewAmlAlert,
+);
+
+// Manually trigger SAR generation for an alert
+auditRoutes.post(
+  "/aml/alerts/:alertId/sar",
+  TimeoutPresets.quick,
+  haltOnTimedout,
+  authorizeObj("aml_alerts", "write"),
+  markAlertForSAR,
+);
+
+// Fetch transaction rejections list
+auditRoutes.get(
+  "/rejections",
+  TimeoutPresets.quick,
+  haltOnTimedout,
+  authorizeObj("aml_alerts", "read"),
+  getTransactionRejections,
+);
+
+// Fetch transaction rejection stats
+auditRoutes.get(
+  "/rejections/stats",
+  TimeoutPresets.quick,
+  haltOnTimedout,
+  authorizeObj("aml_alerts", "read"),
+  getTransactionRejectionStats,
 );

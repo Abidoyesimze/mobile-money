@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { printError } from "../utils/cli";
 /**
  * Migration Runner (Issue #45)
  *
@@ -29,8 +30,13 @@ dotenv.config();
 // Database connection
 // ---------------------------------------------------------------------------
 
+const isSandbox = process.env.IS_SANDBOX === "true";
+const dbUrl = isSandbox
+  ? process.env.SANDBOX_DATABASE_URL || process.env.DATABASE_URL
+  : process.env.DATABASE_URL;
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: dbUrl,
   max: 5,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
@@ -191,7 +197,7 @@ async function migrateUp(): Promise<void> {
       console.log(`  Applied: ${migration.name}`);
     } catch (err) {
       await client.query("ROLLBACK");
-      console.error(`  Failed to apply ${migration.name}:`, err);
+      printError(`  Failed to apply ${migration.name}:`, err);
       throw err;
     } finally {
       client.release();
@@ -218,12 +224,12 @@ async function migrateDown(): Promise<void> {
   const migration = all.find((m) => m.version === lastVersion);
 
   if (!migration) {
-    console.error(`Could not find migration file for version: ${lastVersion}`);
+    printError(`Could not find migration file for version: ${lastVersion}`);
     process.exit(1);
   }
 
   if (!migration.downPath) {
-    console.error(
+    printError(
       `No rollback file found for ${migration.name}. Expected: ${migration.version}_*.down.sql`,
     );
     process.exit(1);
@@ -243,7 +249,7 @@ async function migrateDown(): Promise<void> {
     console.log(`  Rolled back: ${migration.name}`);
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error(`  Failed to roll back ${migration.name}:`, err);
+    printError(`  Failed to roll back ${migration.name}:`, err);
     throw err;
   } finally {
     client.release();
@@ -290,13 +296,13 @@ const command = process.argv[2];
         await migrateStatus();
         break;
       default:
-        console.error(
+        printError(
           `Unknown command: ${command ?? "(none)"}.\nUsage: migrate <up|down|status>`,
         );
         process.exit(1);
     }
   } catch (err) {
-    console.error("Migration runner error:", err);
+    printError("Migration runner error:", err);
     process.exit(1);
   } finally {
     await pool.end();

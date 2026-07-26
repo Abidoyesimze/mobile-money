@@ -1,11 +1,41 @@
 import * as StellarSdk from "stellar-sdk";
 import { getStellarServer, getNetworkPassphrase } from "../../config/stellar";
-import { transactionTotal, transactionErrorsTotal } from "../../utils/metrics";
 
-/**
- * HTLC Service for Stellar Soroban
- * Handles lock, claim and refund operations
- */
+export interface HtlcLockParams {
+  senderAddress: string;
+  receiverAddress: string;
+  tokenAddress: string;
+  amount: string;
+  hashlock: string;
+  timelock: number;
+  contractId: string;
+  approvedSigners?: string[];
+  requiredSignatures?: number;
+}
+
+export interface HtlcClaimParams {
+  claimerAddress: string;
+  preimage: string;
+  contractId: string;
+  signers?: string[];
+}
+
+export interface HtlcRefundParams {
+  refunderAddress: string;
+  contractId: string;
+}
+
+export interface HtlcState {
+  sender: string;
+  receiver: string;
+  token: string;
+  amount: string;
+  hashlock: string;
+  timelock: number;
+  claimed: boolean;
+  refunded: boolean;
+}
+
 export class HtlcService {
   private server: StellarSdk.Horizon.Server;
   private networkPassphrase: string;
@@ -15,109 +45,128 @@ export class HtlcService {
     this.networkPassphrase = getNetworkPassphrase();
   }
 
-  /**
-   * Build an HTLC lock transaction
-   */
-  async buildLockTx(params: {
-    senderAddress: string;
-    receiverAddress: string;
-    tokenAddress: string;
-    amount: string;
-    hashlock: string; // 32-byte hex string
-    timelock: number; // Unix timestamp
-    contractId: string;
-  }): Promise<StellarSdk.Transaction> {
+  private addressToScVal(address: string) {
+    return StellarSdk.nativeToScVal(address, { type: "address" });
+  }
+
+  private bytesNToScVal(hex: string) {
+    return StellarSdk.nativeToScVal(Buffer.from(hex, "hex"), {
+      type: "bytesN",
+    });
+  }
+
+  private u64ToScVal(value: bigint | number) {
+    return StellarSdk.nativeToScVal(BigInt(value), { type: "u64" });
+  }
+
+  private u32ToScVal(value: number) {
+    return StellarSdk.nativeToScVal(value, { type: "u32" });
+  }
+
+  private addressArrayToScVal(addresses: string[]) {
+    const converted = addresses.map((address) => this.addressToScVal(address));
+    return StellarSdk.nativeToScVal(converted, { type: "vec" });
+  }
+
+  async buildLockTx(params: HtlcLockParams): Promise<StellarSdk.Transaction> {
     const senderAccount = await this.server.loadAccount(params.senderAddress);
-    
-    const spec = new StellarSdk.Contract(params.contractId);
-    
-    // Encode arguments for Soroban
-    // fn initialize(env: Env, sender: Address, receiver: Address, token: Address, amount: i128, hashlock: BytesN<32>, timelock: u64)
-    const args = [
-      StellarSdk.nativeToScVal(params.senderAddress, { type: "address" }),
-      StellarSdk.nativeToScVal(params.receiverAddress, { type: "address" }),
-      StellarSdk.nativeToScVal(params.tokenAddress, { type: "address" }),
-      StellarSdk.nativeToScVal(params.amount, { type: "i128" }),
-      StellarSdk.nativeToScVal(Buffer.from(params.hashlock, "hex"), { type: "bytesN", size: 32 }),
-      StellarSdk.nativeToScVal(params.timelock, { type: "u64" }),
-    ];
 
-    const operation = spec.call("initialize", ...args);
+    const approvedSigners = params.approvedSigners ?? [];
+    const requiredSignatures = params.requiredSignatures ?? 0;
 
-    return new StellarSdk.TransactionBuilder(senderAccount, {
+    const contract = new StellarSdk.Contract(params.contractId);
+    const tx = new StellarSdk.TransactionBuilder(senderAccount, {
       fee: StellarSdk.BASE_FEE,
       networkPassphrase: this.networkPassphrase,
     })
-      .addOperation(operation)
+      .addOperation(
+        contract.call(
+          "initialize",
+          this.addressToScVal(params.senderAddress),
+          this.addressToScVal(params.receiverAddress),
+          this.addressToScVal(params.tokenAddress),
+          this.u64ToScVal(BigInt(params.amount)),
+          this.bytesNToScVal(params.hashlock),
+          this.u64ToScVal(params.timelock),
+          this.addressArrayToScVal(approvedSigners),
+          this.u32ToScVal(requiredSignatures),
+        ),
+      )
       .setTimeout(30)
       .build();
+
+    return tx;
   }
 
-  /**
-   * Build an HTLC claim transaction
-   */
-  async buildClaimTx(params: {
-    claimerAddress: string;
-    preimage: string; // 32-byte hex string
-    contractId: string;
-  }): Promise<StellarSdk.Transaction> {
+  async buildClaimTx(params: HtlcClaimParams): Promise<StellarSdk.Transaction> {
     const claimerAccount = await this.server.loadAccount(params.claimerAddress);
-    const spec = new StellarSdk.Contract(params.contractId);
 
-    // fn claim(env: Env, preimage: BytesN<32>)
-    const args = [
-      StellarSdk.nativeToScVal(Buffer.from(params.preimage, "hex"), { type: "bytesN", size: 32 }),
-    ];
-
-    const operation = spec.call("claim", ...args);
-
-    return new StellarSdk.TransactionBuilder(claimerAccount, {
+    const signers = params.signers ?? [];
+    const contract = new StellarSdk.Contract(params.contractId);
+    const tx = new StellarSdk.TransactionBuilder(claimerAccount, {
       fee: StellarSdk.BASE_FEE,
       networkPassphrase: this.networkPassphrase,
     })
-      .addOperation(operation)
+      .addOperation(
+        contract.call(
+          "claim",
+          this.bytesNToScVal(params.preimage),
+          this.addressArrayToScVal(signers),
+        ),
+      )
       .setTimeout(30)
       .build();
+
+    return tx;
   }
 
-  /**
-   * Build an HTLC refund transaction
-   */
-  async buildRefundTx(params: {
-    refunderAddress: string;
-    contractId: string;
-  }): Promise<StellarSdk.Transaction> {
-    const refunderAccount = await this.server.loadAccount(params.refunderAddress);
-    const spec = new StellarSdk.Contract(params.contractId);
+  async buildRefundTx(
+    params: HtlcRefundParams,
+  ): Promise<StellarSdk.Transaction> {
+    const refunderAccount = await this.server.loadAccount(
+      params.refunderAddress,
+    );
 
-    // fn refund(env: Env)
-    const operation = spec.call("refund");
-
-    return new StellarSdk.TransactionBuilder(refunderAccount, {
+    const contract = new StellarSdk.Contract(params.contractId);
+    const tx = new StellarSdk.TransactionBuilder(refunderAccount, {
       fee: StellarSdk.BASE_FEE,
       networkPassphrase: this.networkPassphrase,
     })
-      .addOperation(operation)
+      .addOperation(contract.call("refund"))
       .setTimeout(30)
       .build();
+
+    return tx;
   }
 
-  /**
-   * Get HTLC state from chain
-   */
-  async getHtlcState(contractId: string): Promise<any> {
-    const spec = new StellarSdk.Contract(contractId);
-    
-    // To read state, we normally use get_state if exposed or check storage
-    // For simplicity, we assume we can call get_state (read-only)
-    // Note: Soroban read-only calls are usually done via simulation or specific RPC
-    // Here we'll just mock it or provide a placeholder for actual RPC call
-    console.log(`Fetching HTLC state for ${contractId}...`);
-    
-    // In a real scenario, you'd use the Soroban RPC to simulate the get_state call
+  async getHtlcState(contractId: string): Promise<HtlcState> {
+    const contract = new StellarSdk.Contract(contractId);
+    const response = await contract.call("get_state");
+
+    if (!response || typeof response !== "object") {
+      throw new Error("Unable to fetch HTLC state from contract");
+    }
+
+    const state = response as unknown as {
+      sender: string;
+      receiver: string;
+      token: string;
+      amount: string | number;
+      hashlock: string;
+      timelock: number;
+      claimed: boolean;
+      refunded: boolean;
+    };
+
     return {
-      exists: true,
-      // ... more fields
+      sender: state.sender,
+      receiver: state.receiver,
+      token: state.token,
+      amount: String(state.amount),
+      hashlock: state.hashlock,
+      timelock: Number(state.timelock),
+      claimed: Boolean(state.claimed),
+      refunded: Boolean(state.refunded),
     };
   }
 }

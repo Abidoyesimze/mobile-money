@@ -1,3 +1,4 @@
+import logger from "../utils/logger";
 import cron from "node-cron";
 import { runAccountMergeJob } from "./accountMerge";
 import { runCleanupJob } from "./cleanupJob";
@@ -8,6 +9,7 @@ import { runDisputeSlaJob } from "./disputeSlaJob";
 import { runBalanceMonitorJob } from "./balanceMonitorJob";
 import { runSep31MonitorJob } from "./sep31MonitorJob";
 import { runFeeBumpJob } from "./feeBumpJob";
+import { runSep31FeeBumpJob } from "./sep31FeeBumpJob";
 import { MonitoringService } from "../services/monitoringService";
 import { createPagerDutyService } from "../services/pagerDutyService";
 import { runProviderBalanceAlertJob } from "./balances";
@@ -16,6 +18,15 @@ import { runKycTierUpgradeJob } from "./kycTierUpgradeJob";
 import { runLiquidityRebalanceJob } from "./liquidityRebalanceJob";
 import { runCrossChainMonitorJob } from "./crossChainMonitorJob";
 import { runDailySettlementJob } from "./dailySettlementJob";
+import { runDailyProviderReconciliation } from "./providerReconciliationJob";
+import { runReconciliationJob } from "./reconciliationJob";
+import { runDatabaseBackupJob } from "./databaseBackupJob";
+import { runDatabaseBackupVerifyJob } from "./databaseBackupVerifyJob";
+import { INDEX_REINDEX_CRON, INDEX_REINDEX_JOB_ENABLED } from "../config/env";
+import { runIndexReindexJob } from "./indexReindexJob";
+import { runSanctionSyncJob } from "./sanctionSyncJob";
+import { runJwtKeyRotationJob } from "./jwtKeyRotationJob";
+import { startNotificationWorker } from "../workers/notificationWorker";
 
 interface JobConfig {
   name: string;
@@ -24,6 +35,12 @@ interface JobConfig {
 }
 
 const JOBS: JobConfig[] = [
+  {
+    name: "sanction-sync",
+    // Daily at 1:00 AM - syncs internal sanction list with global lists
+    schedule: process.env.SANCTION_SYNC_CRON || "0 1 * * *",
+    handler: runSanctionSyncJob,
+  },
   {
     name: "cleanup",
     // Daily at 2:00 AM - deletes old completed/failed transactions
@@ -67,6 +84,12 @@ const JOBS: JobConfig[] = [
     handler: runFeeBumpJob,
   },
   {
+    name: "sep31-fee-bump",
+    // Every 30 seconds - bumps fees for stuck SEP-31 transactions
+    schedule: process.env.SEP31_FEE_BUMP_CRON || "*/30 * * * * *",
+    handler: runSep31FeeBumpJob,
+  },
+  {
     name: "provider-balance-alert",
     // Every 10 minutes - checks MTN/Airtel operational balances and alerts treasury when low
     schedule: process.env.PROVIDER_BALANCE_ALERT_CRON || "*/10 * * * *",
@@ -85,10 +108,76 @@ const JOBS: JobConfig[] = [
     handler: runDailySettlementJob,
   },
   {
+    name: "provider-reconciliation",
+    // Daily at 4:00 AM - runs automated reconciliation against provider CSV reports
+    schedule: process.env.PROVIDER_RECONCILIATION_CRON || "0 4 * * *",
+    handler: runDailyProviderReconciliation,
+  },
+  {
     name: "monthly-invoice",
     // 1st of every month at midnight
     schedule: "0 0 1 * *",
     handler: runMonthlyInvoiceJob,
+  },
+  {
+    name: "monthly-reconciliation-report",
+    // 1st of every month at midnight
+    schedule: "0 0 1 * *",
+    handler: async () => {
+      const { runMonthlyReconciliationReportJob } =
+        await import("./monthlyReconciliationReportJob.js");
+      return runMonthlyReconciliationReportJob();
+    },
+  },
+  ...(INDEX_REINDEX_JOB_ENABLED
+    ? [
+        {
+          name: "index-reindex",
+          // Daily at 3:00 AM by default - reindexes bloated indexes during low traffic
+          schedule: INDEX_REINDEX_CRON,
+          handler: runIndexReindexJob,
+        },
+      ]
+    : []),
+  {
+    name: "subscriptions",
+    // Default: run every minute to pick up due subscriptions
+    schedule: process.env.SUBSCRIPTION_CRON || "*/1 * * * *",
+    handler: async () => {
+      const { runSubscriptionJob } = await import("./subscriptionJob.js");
+      return runSubscriptionJob();
+    },
+  },
+  {
+    name: "reconciliation",
+    // Daily at 5:00 AM
+    schedule: process.env.RECONCILIATION_CRON || "0 5 * * *",
+    handler: runReconciliationJob,
+  },
+  {
+    name: "database-backup",
+    // Daily at 2:00 AM
+    schedule: process.env.DATABASE_BACKUP_CRON || "0 2 * * *",
+    handler: runDatabaseBackupJob,
+  },
+  {
+    name: "database-backup-verify",
+    // Daily at 3:00 AM
+    schedule: process.env.DATABASE_BACKUP_VERIFY_CRON || "0 3 * * *",
+    handler: runDatabaseBackupVerifyJob,
+  },
+  {
+    name: "jwt-key-rotation",
+    // Monthly on the 1st at 3:00 AM — rotates JWT signing key,
+    // old keys remain valid for 24-hour grace period
+    schedule: process.env.JWT_KEY_ROTATION_CRON || "0 3 1 * *",
+    handler: runJwtKeyRotationJob,
+  },
+  {
+    name: "sanction-sync",
+    // Daily at 1:00 AM - streams and indexes sanctions list updates, clears match cache
+    schedule: process.env.SANCTION_SYNC_CRON || "0 1 * * *",
+    handler: runSanctionSyncJob,
   },
 ];
 
@@ -98,7 +187,7 @@ async function runJob(job: JobConfig): Promise<void> {
     await job.handler();
     console.log(`[${job.name}] Completed`);
   } catch (err) {
-    console.error(`[${job.name}] Failed:`, err);
+    logger.error(`[${job.name}] Failed:`, err);
   }
 }
 
@@ -112,7 +201,7 @@ export function startJobs(): void {
 
   for (const job of JOBS) {
     if (!cron.validate(job.schedule)) {
-      console.error(
+      logger.error(
         `[scheduler] Invalid cron expression for "${job.name}": ${job.schedule}`,
       );
       continue;
@@ -120,4 +209,11 @@ export function startJobs(): void {
     cron.schedule(job.schedule, () => runJob(job));
     console.log(`[scheduler] "${job.name}" scheduled - ${job.schedule}`);
   }
+
+  // Start the notification worker which listens for Redis pub/sub events
+  // and drives user-facing notifications in real-time. This replaces any
+  // DB-polling notification mechanisms.
+  startNotificationWorker().catch((err) => {
+    console.warn("Failed to start NotificationWorker:", err);
+  });
 }
