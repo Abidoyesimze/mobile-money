@@ -3,6 +3,9 @@
 
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env};
 
+mod storage;
+use storage::ESCROW;
+
 // ── Error types ──────────────────────────────────────────────────────────────
 
 /// Contract-level errors surfaced via the Soroban SDK error-code mechanism.
@@ -64,10 +67,6 @@ impl EscrowState {
         (fee, net)
     }
 }
-
-// ── Storage key ──────────────────────────────────────────────────────────────
-
-const ESCROW: &str = "ESCROW";
 
 // ── Contract ─────────────────────────────────────────────────────────────────
 

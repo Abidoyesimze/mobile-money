@@ -1,5 +1,8 @@
 import { Worker, Job } from "bullmq";
-import { queueOptions } from "./config";
+import {
+  queueOptions,
+  getAccountingTokenRefreshWorkerConcurrency,
+} from "./config";
 import {
   ACCOUNTING_TOKEN_REFRESH_QUEUE_NAME,
   AccountingTokenRefreshJobData,
@@ -43,7 +46,10 @@ export function startAccountingTokenRefreshWorker(): void {
         throw error; // Re-throw to trigger BullMQ retry
       }
     },
-    queueOptions,
+    {
+      ...queueOptions,
+      concurrency: getAccountingTokenRefreshWorkerConcurrency(),
+    },
   );
 
   worker.on("failed", (job, err) => {
