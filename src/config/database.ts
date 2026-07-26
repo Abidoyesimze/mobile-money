@@ -4,6 +4,7 @@ import { auditService } from "../services/auditlogService";
 import { isReadOnlyQuery } from "../utils/readOnlyDetector";
 import { dbReplicaLagSeconds, dbReplicaReadEnabled } from "../utils/metrics";
 import { IS_SANDBOX, SANDBOX_DATABASE_URL, DATABASE_URL } from "./env";
+import { startDeadlockDetector } from "./deadlockDetector";
 
 const DR_DATABASE_URL = process.env.DR_DATABASE_URL;
 const isDRMode = (): boolean => !!DR_DATABASE_URL;
@@ -47,6 +48,7 @@ function isTransientDatabaseError(error: unknown): boolean {
     code === "ETIMEDOUT" ||
     code === "57P01" ||
     code === "08006" ||
+    code === "40P01" ||
     message.includes("connection terminated") ||
     message.includes("terminated unexpectedly") ||
     message.includes("connection lost") ||
@@ -510,6 +512,7 @@ function startReplicaLagMonitor(): void {
 }
 
 startReplicaLagMonitor();
+startDeadlockDetector(pool);
 
 /**
  * Execute a read-only SQL query against a replica pool if available.
