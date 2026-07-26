@@ -3287,7 +3287,7 @@ router.post(
 
       if (dryRun) {
         // Dry-run: fetch pending list without writing any updates.
-        const { queryRead } = await import("../config/database");
+        const { queryRead } = await import("../config/database.js");
         const result = await queryRead(
           `SELECT
              id,
