@@ -25,9 +25,7 @@ import {
   AlwaysOffSampler,
 } from "@opentelemetry/sdk-trace-base";
 import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
-import { PrometheusExporter } from "@opentelemetry/exporter-prometheus";
-import { MeterProvider } from "@opentelemetry/sdk-metrics";
-import { metrics, trace, context, SpanStatusCode } from "@opentelemetry/api";
+import { trace, context, SpanStatusCode } from "@opentelemetry/api";
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -36,7 +34,6 @@ const SERVICE_NAME    = process.env.OTEL_SERVICE_NAME    ?? "mobile-money";
 const SERVICE_VERSION = process.env.OTEL_SERVICE_VERSION ?? "1.0.0";
 const OTLP_ENDPOINT   = process.env.OTEL_EXPORTER_OTLP_ENDPOINT; // e.g. "http://jaeger:4317"
 const SAMPLING_RATE   = Math.min(1, Math.max(0, parseFloat(process.env.OTEL_SAMPLING_RATE ?? "0.1")));
-const METRICS_PORT    = parseInt(process.env.OTEL_PROMETHEUS_PORT ?? "9464", 10);
 
 // ─── Resource ─────────────────────────────────────────────────────────────────
 
