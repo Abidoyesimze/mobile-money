@@ -30,6 +30,54 @@ const PRIMARY_POOL_MAX_RETRIES = parseInt(
   10,
 );
 
+/* ── Pool sizing configuration (#1652) ───────────────────────────── */
+
+/** Base number of connections in the pool (idle baseline). */
+const POOL_MIN = parseInt(process.env.DB_POOL_MIN || "10", 10);
+
+/** Maximum connections the pool can scale up to during surges. */
+const POOL_MAX = parseInt(process.env.DB_POOL_MAX || "100", 10);
+
+/** Default for when no dynamic max is set. */
+const POOL_DEFAULT_MAX = Math.min(
+  parseInt(process.env.DB_POOL_DEFAULT_MAX || "25", 10),
+  POOL_MAX,
+);
+
+/** Utilization ratio above which the pool grows (0.0–1.0). */
+const POOL_SCALE_UP_THRESHOLD = parseFloat(
+  process.env.DB_POOL_SCALE_UP_THRESHOLD || "0.7",
+);
+
+/** Utilization ratio below which the pool shrinks (0.0–1.0). */
+const POOL_SCALE_DOWN_THRESHOLD = parseFloat(
+  process.env.DB_POOL_SCALE_DOWN_THRESHOLD || "0.3",
+);
+
+/** Cooldown between pool resize operations (ms). */
+const POOL_RESIZE_COOLDOWN_MS = parseInt(
+  process.env.DB_POOL_RESIZE_COOLDOWN_MS || "30000",
+  10,
+);
+
+/** Database connection limit (from PostgreSQL config). Used to prevent
+ *  the pool from exceeding the database's max_connections. */
+const DB_MAX_CONNECTIONS = parseInt(
+  process.env.DB_MAX_CONNECTIONS || "200",
+  10,
+);
+
+/** Monitor interval for checking pool utilization (ms). */
+const POOL_MONITOR_INTERVAL_MS = parseInt(
+  process.env.DB_POOL_MONITOR_INTERVAL_MS || "15000",
+  10,
+);
+
+/** Active pool size tracking for dynamic resizing. */
+let currentPoolMax = POOL_DEFAULT_MAX;
+let lastResizeTime = 0;
+let resizeInProgress = false;
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -335,15 +383,7 @@ function schedulePrimaryPoolReconnect(error: unknown): void {
 async function reconnectPrimaryPool(): Promise<void> {
   try {
     const previousPool = pool;
-    const nextPool = new Pool({
-      connectionString: IS_SANDBOX
-        ? SANDBOX_DATABASE_URL || DATABASE_URL
-        : DATABASE_URL,
-      max: 50,
-      idleTimeoutMillis: 15000,
-      connectionTimeoutMillis: 5000,
-      ssl: productionSsl,
-    });
+    const nextPool = new Pool(buildPoolOptions());
 
     nextPool.on("error", (err) => {
       logger.error("[Database] Primary pool error", err);
@@ -367,23 +407,111 @@ async function reconnectPrimaryPool(): Promise<void> {
   }
 }
 
-function createPrimaryPool(): Pool {
-  const newPool = new Pool({
+/* ── Dynamic pool sizing (#1652) ─────────────────────────────────── */
+
+/**
+ * Get the current pool connection utilization (active / total).
+ */
+function getPoolUtilization(poolInstance: Pool): number {
+  const total = poolInstance.totalCount;
+  const idle = poolInstance.idleCount;
+  const active = total - idle;
+  return total > 0 ? active / total : 0;
+}
+
+/**
+ * Dynamically adjust the pool's max size based on utilization.
+ * Scales up during surges, scales down during low load.
+ * Prevents the pool from exceeding the database's max_connections.
+ */
+async function adjustPoolSize(poolInstance: Pool): Promise<void> {
+  const now = Date.now();
+  if (resizeInProgress || now - lastResizeTime < POOL_RESIZE_COOLDOWN_MS) {
+    return;
+  }
+
+  const utilization = getPoolUtilization(poolInstance);
+  const dbMaxPerPool = Math.max(1, Math.floor(DB_MAX_CONNECTIONS / 2));
+
+  if (utilization >= POOL_SCALE_UP_THRESHOLD && currentPoolMax < POOL_MAX) {
+    // Scale up: add connections in steps of 25%, capped at POOL_MAX
+    const newMax = Math.min(
+      Math.ceil(currentPoolMax * 1.25),
+      POOL_MAX,
+      dbMaxPerPool,
+    );
+    if (newMax > currentPoolMax) {
+      resizeInProgress = true;
+      currentPoolMax = newMax;
+      poolInstance.options.max = newMax;
+      lastResizeTime = now;
+      logger.info(
+        { from: currentPoolMax, to: newMax, utilization },
+        "[Pool] Scaled up due to high utilization",
+      );
+      resizeInProgress = false;
+    }
+  } else if (
+    utilization <= POOL_SCALE_DOWN_THRESHOLD &&
+    currentPoolMax > POOL_MIN
+  ) {
+    // Scale down: reduce connections in steps of 25%, floored at POOL_MIN
+    const newMax = Math.max(
+      Math.floor(currentPoolMax * 0.75),
+      POOL_MIN,
+    );
+    if (newMax < currentPoolMax) {
+      resizeInProgress = true;
+      currentPoolMax = newMax;
+      poolInstance.options.max = newMax;
+      lastResizeTime = now;
+      logger.info(
+        { from: currentPoolMax, to: newMax, utilization },
+        "[Pool] Scaled down due to low utilization",
+      );
+      resizeInProgress = false;
+    }
+  }
+}
+
+/**
+ * Start the pool monitor that periodically checks utilization and adjusts
+ * pool size. Returns the interval handle for cleanup.
+ */
+function startPoolMonitor(poolInstance: Pool): ReturnType<typeof setInterval> {
+  return setInterval(() => {
+    void adjustPoolSize(poolInstance);
+  }, POOL_MONITOR_INTERVAL_MS);
+}
+
+function buildPoolOptions(): import("pg").PoolConfig {
+  return {
     connectionString: IS_SANDBOX
       ? SANDBOX_DATABASE_URL || DATABASE_URL
       : DATABASE_URL,
-    max: 50,
+    max: POOL_DEFAULT_MAX,
     idleTimeoutMillis: 15000,
     connectionTimeoutMillis: 5000,
     ssl: productionSsl,
-  });
+  };
+}
+
+function createPrimaryPool(): Pool {
+  const newPool = new Pool(buildPoolOptions());
 
   newPool.on("error", (err) => {
     logger.error("[Database] Primary pool error", err);
     schedulePrimaryPoolReconnect(err);
   });
 
+  currentPoolMax = POOL_DEFAULT_MAX;
   attachPrimaryPoolRecovery(newPool);
+
+  // Start pool monitor for dynamic sizing during surges (#1652)
+  if (process.env.NODE_ENV !== "test") {
+    startPoolMonitor(newPool);
+  }
+
   return newPool;
 }
 
@@ -433,7 +561,7 @@ const replicaPools: Pool[] = replicaUrls.map(
   (url) =>
     new Pool({
       connectionString: url,
-      max: 50,
+      max: parseInt(process.env.DB_REPLICA_POOL_MAX || "50", 10),
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 500,
       ssl: productionSsl,
