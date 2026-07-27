@@ -1,3 +1,6 @@
+// Bootstrap vault secrets first
+import "./config/vault";
+
 import logger from "./utils/logger";
 // Initialize centralized configuration first
 import "./config/init";
@@ -64,6 +67,7 @@ import { readReplicaRoutingMiddleware } from "./middleware/readReplicaRouting";
 import { dbConnectionLeakDetector } from "./middleware/dbConnectionLeakDetector";
 import { i18nMiddleware } from "./utils/i18n";
 import { metricsMiddleware } from "./middleware/metrics";
+import { tracingMetricsMiddleware } from "./middleware/tracingMetrics";
 import { validateStellarNetwork, logStellarNetwork } from "./config/stellar";
 import { sessionAnomalyLogger } from "./services/logger";
 import { HealthCheckResponse, ReadinessCheckResponse } from "./types/api";
@@ -98,6 +102,7 @@ import { statementsRoutes } from "./routes/statements";
 import { paymentLinkRoutes } from "./routes/paymentLinkRoutes.js";
 import { SEP24_INTERACTIVE_HTML } from "./services/sep24InteractivePage.js";
 import providerStatusRouter from "./routes/providerStatus";
+import adminControllerRouter from "./controllers/adminController";
 import {
   startHeartbeatService,
   stopHeartbeatService,
@@ -113,6 +118,18 @@ import { ERROR_CODES } from "./constants/errorCodes";
 import { startApolloServer } from "./graphql/server";
 
 dotenv.config();
+
+logger.info(
+  {
+    datadog: {
+      service: process.env.DD_SERVICE || "mobile-money",
+      env: process.env.DD_ENV || process.env.NODE_ENV || "development",
+      logInjection: true,
+      agentUrl: process.env.DD_TRACE_AGENT_URL || undefined,
+    },
+  },
+  "Datadog tracer initialized",
+);
 
 if (process.env.SENTRY_DSN) {
   initSentry(process.env.SENTRY_DSN, process.env.SENTRY_RELEASE);
@@ -141,6 +158,8 @@ if (process.env.SENTRY_DSN) {
 app.use(sentryBreadcrumbMiddleware);
 
 app.use(metricsMiddleware);
+app.use(tracingMetricsMiddleware);
+applySecurityMiddleware(app);
 app.use(helmet());
 app.use(createCorsMiddleware());
 
@@ -446,6 +465,7 @@ app.use("/api/exchange-rate-buffers", exchangeRateBufferRoutes);
 app.use("/api/admin/assets", adminAssetRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/statements", statementsRoutes);
+app.use("/api/monitoring", adminControllerRouter);
 app.get("/", (_req: Request, res: Response) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(SEP24_INTERACTIVE_HTML);

@@ -3,10 +3,8 @@ import { Pool, QueryConfig, QueryResult, QueryResultRow, PoolClient } from "pg";
 import { auditService } from "../services/auditlogService";
 import { isReadOnlyQuery } from "../utils/readOnlyDetector";
 import { dbReplicaLagSeconds, dbReplicaReadEnabled } from "../utils/metrics";
-import { IS_SANDBOX, SANDBOX_DATABASE_URL, DATABASE_URL } from "./env";
-import { startDeadlockDetector } from "./deadlockDetector";
+import { IS_SANDBOX, SANDBOX_DATABASE_URL, DATABASE_URL, DR_DATABASE_URL } from "./env";
 
-const DR_DATABASE_URL = process.env.DR_DATABASE_URL;
 const isDRMode = (): boolean => !!DR_DATABASE_URL;
 
 const productionSsl =
@@ -30,6 +28,80 @@ const PRIMARY_POOL_MAX_RETRIES = parseInt(
   process.env.DB_MAX_RETRIES || "3",
   10,
 );
+const MAX_CONNECTIONS = parseInt(
+  process.env.DB_MAX_CONNECTIONS || "50",
+  10,
+);
+const POOL_MAX_USES = parseInt(
+  process.env.DB_POOL_MAX_USES || "0",
+  10,
+);
+const POOL_ALLOW_EXIT_ON_IDLE =
+  process.env.DB_POOL_ALLOW_EXIT_ON_IDLE === "true";
+const POOL_IDLE_TIMEOUT_MS = parseInt(
+  process.env.DB_POOL_IDLE_TIMEOUT_MS || "15000",
+  10,
+);
+const POOL_CONNECTION_TIMEOUT_MS = parseInt(
+  process.env.DB_POOL_CONNECTION_TIMEOUT_MS || "5000",
+  10,
+);
+const REPLICA_IDLE_TIMEOUT_MS = parseInt(
+  process.env.DB_REPLICA_IDLE_TIMEOUT_MS || "30000",
+  10,
+);
+const REPLICA_CONNECTION_TIMEOUT_MS = parseInt(
+  process.env.DB_REPLICA_CONNECTION_TIMEOUT_MS || "500",
+  10,
+);
+
+/* ── Pool sizing configuration (#1652) ───────────────────────────── */
+
+/** Base number of connections in the pool (idle baseline). */
+const POOL_MIN = parseInt(process.env.DB_POOL_MIN || "10", 10);
+
+/** Maximum connections the pool can scale up to during surges. */
+const POOL_MAX = parseInt(process.env.DB_POOL_MAX || "100", 10);
+
+/** Default for when no dynamic max is set. */
+const POOL_DEFAULT_MAX = Math.min(
+  parseInt(process.env.DB_POOL_DEFAULT_MAX || "25", 10),
+  POOL_MAX,
+);
+
+/** Utilization ratio above which the pool grows (0.0–1.0). */
+const POOL_SCALE_UP_THRESHOLD = parseFloat(
+  process.env.DB_POOL_SCALE_UP_THRESHOLD || "0.7",
+);
+
+/** Utilization ratio below which the pool shrinks (0.0–1.0). */
+const POOL_SCALE_DOWN_THRESHOLD = parseFloat(
+  process.env.DB_POOL_SCALE_DOWN_THRESHOLD || "0.3",
+);
+
+/** Cooldown between pool resize operations (ms). */
+const POOL_RESIZE_COOLDOWN_MS = parseInt(
+  process.env.DB_POOL_RESIZE_COOLDOWN_MS || "30000",
+  10,
+);
+
+/** Database connection limit (from PostgreSQL config). Used to prevent
+ *  the pool from exceeding the database's max_connections. */
+const DB_MAX_CONNECTIONS = parseInt(
+  process.env.DB_MAX_CONNECTIONS || "200",
+  10,
+);
+
+/** Monitor interval for checking pool utilization (ms). */
+const POOL_MONITOR_INTERVAL_MS = parseInt(
+  process.env.DB_POOL_MONITOR_INTERVAL_MS || "15000",
+  10,
+);
+
+/** Active pool size tracking for dynamic resizing. */
+let currentPoolMax = POOL_DEFAULT_MAX;
+let lastResizeTime = 0;
+let resizeInProgress = false;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -337,15 +409,7 @@ function schedulePrimaryPoolReconnect(error: unknown): void {
 async function reconnectPrimaryPool(): Promise<void> {
   try {
     const previousPool = pool;
-    const nextPool = new Pool({
-      connectionString: IS_SANDBOX
-        ? SANDBOX_DATABASE_URL || DATABASE_URL
-        : DATABASE_URL,
-      max: 50,
-      idleTimeoutMillis: 15000,
-      connectionTimeoutMillis: 5000,
-      ssl: productionSsl,
-    });
+    const nextPool = new Pool(getPoolOptions());
 
     nextPool.on("error", (err) => {
       logger.error("[Database] Primary pool error", err);
@@ -369,23 +433,44 @@ async function reconnectPrimaryPool(): Promise<void> {
   }
 }
 
-function createPrimaryPool(): Pool {
-  const newPool = new Pool({
+function getPoolOptions(overrides: Partial<{
+  max: number;
+  idleTimeoutMillis: number;
+  connectionTimeoutMillis: number;
+  ssl: boolean | undefined;
+  maxUses: number;
+  allowExitOnIdle: boolean;
+}> = {}): object {
+  return {
     connectionString: IS_SANDBOX
       ? SANDBOX_DATABASE_URL || DATABASE_URL
       : DATABASE_URL,
-    max: 50,
-    idleTimeoutMillis: 15000,
-    connectionTimeoutMillis: 5000,
-    ssl: productionSsl,
-  });
+    max: overrides.max ?? MAX_CONNECTIONS,
+    idleTimeoutMillis: overrides.idleTimeoutMillis ?? POOL_IDLE_TIMEOUT_MS,
+    connectionTimeoutMillis:
+      overrides.connectionTimeoutMillis ?? POOL_CONNECTION_TIMEOUT_MS,
+    ssl: overrides.ssl ?? productionSsl,
+    maxUses: overrides.maxUses ?? POOL_MAX_USES,
+    allowExitOnIdle: overrides.allowExitOnIdle ?? POOL_ALLOW_EXIT_ON_IDLE,
+  };
+}
+
+function createPrimaryPool(): Pool {
+  const newPool = new Pool(getPoolOptions());
 
   newPool.on("error", (err) => {
     logger.error("[Database] Primary pool error", err);
     schedulePrimaryPoolReconnect(err);
   });
 
+  currentPoolMax = POOL_DEFAULT_MAX;
   attachPrimaryPoolRecovery(newPool);
+
+  // Start pool monitor for dynamic sizing during surges (#1652)
+  if (process.env.NODE_ENV !== "test") {
+    startPoolMonitor(newPool);
+  }
+
   return newPool;
 }
 
@@ -435,10 +520,12 @@ const replicaPools: Pool[] = replicaUrls.map(
   (url) =>
     new Pool({
       connectionString: url,
-      max: 50,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 500,
+      max: MAX_CONNECTIONS,
+      idleTimeoutMillis: REPLICA_IDLE_TIMEOUT_MS,
+      connectionTimeoutMillis: REPLICA_CONNECTION_TIMEOUT_MS,
       ssl: productionSsl,
+      maxUses: POOL_MAX_USES,
+      allowExitOnIdle: POOL_ALLOW_EXIT_ON_IDLE,
     }),
 );
 
@@ -544,6 +631,21 @@ export async function queryRead<T extends import("pg").QueryResultRow = any>(
 
   // Fall back: use primary pool (which goes through PgBouncer)
   return pool.query<T>(text, params);
+}
+
+/**
+ * Specifically routes transaction log read queries (SELECT) to read-replica pool.
+ * Automatically falls back to primary database pool if replicas are offline or unreachable.
+ */
+export async function queryTransactionLogRead<T extends import("pg").QueryResultRow = any>(
+  text: string,
+  params?: unknown[],
+): Promise<import("pg").QueryResult<T>> {
+  if (!text.trim().toUpperCase().startsWith("SELECT")) {
+    // If not a read-only query, route directly to primary write pool
+    return queryWrite<T>(text, params);
+  }
+  return queryRead<T>(text, params);
 }
 
 /**

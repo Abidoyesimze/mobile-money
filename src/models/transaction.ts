@@ -14,6 +14,7 @@ export type AssetType = "native" | "credit_alphanum4" | "credit_alphanum12";
 
 export enum TransactionStatus {
   Pending = "pending",
+  Processing = "processing",
   Completed = "completed",
   Failed = "failed",
   Cancelled = "cancelled",
@@ -874,5 +875,25 @@ export class TransactionModel {
         id,
       ],
     );
+  }
+
+  /**
+   * Atomically claims a pending transaction for processing to prevent race conditions across parallel worker instances.
+   * Returns the transaction row if successfully claimed, or null if already claimed/processed.
+   */
+  async claimForProcessing(id: string): Promise<Transaction | null> {
+    const res = await queryWrite(
+      `UPDATE transactions
+       SET status = $1, updated_at = NOW()
+       WHERE id = $2 AND status = $3
+       RETURNING ${TRANSACTION_SELECT_COLUMNS}`,
+      [TransactionStatus.Processing, id, TransactionStatus.Pending],
+    );
+
+    if (!res.rows || res.rows.length === 0) {
+      return null;
+    }
+
+    return mapTransactionRow(res.rows[0]);
   }
 }

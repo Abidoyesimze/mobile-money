@@ -27,6 +27,7 @@ import { runIndexReindexJob } from "./indexReindexJob";
 import { runSanctionSyncJob } from "./sanctionSyncJob";
 import { runJwtKeyRotationJob } from "./jwtKeyRotationJob";
 import { startNotificationWorker } from "../workers/notificationWorker";
+import { runTravelRuleExportJob } from "../services/compliance/travelRuleExport";
 
 interface JobConfig {
   name: string;
@@ -178,6 +179,12 @@ const JOBS: JobConfig[] = [
     // Daily at 1:00 AM - streams and indexes sanctions list updates, clears match cache
     schedule: process.env.SANCTION_SYNC_CRON || "0 1 * * *",
     handler: runSanctionSyncJob,
+  },
+  {
+    name: "travel-rule-export",
+    // Hourly - exports pending Travel Rule compliance records to regulatory reporting endpoints
+    schedule: process.env.TRAVEL_RULE_EXPORT_CRON || "0 * * * *",
+    handler: runTravelRuleExportJob,
   },
 ];
 

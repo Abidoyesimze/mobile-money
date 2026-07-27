@@ -79,12 +79,6 @@ export const configSchema = convict({
         default: "",
         env: "MTN_CALLBACK_SECRET",
       },
-      allowedIps: {
-        doc: "Comma-separated list of allowed CIDR blocks for MTN callbacks",
-        format: String,
-        default: "",
-        env: "MTN_ALLOWED_IPS",
-      },
       callbackSignatureHeader: {
         doc: "Header used by MTN for callback signature verification",
         format: String,
@@ -104,12 +98,6 @@ export const configSchema = convict({
         format: "nat",
         default: 1000000,
         env: "AIRTEL_MAX_AMOUNT",
-      },
-      allowedIps: {
-        doc: "Comma-separated list of allowed CIDR blocks for Airtel callbacks",
-        format: String,
-        default: "",
-        env: "AIRTEL_ALLOWED_IPS",
       },
       webBaseUrl: {
         doc: "Airtel web base URL (session mode)",
@@ -143,12 +131,6 @@ export const configSchema = convict({
         default: 750000,
         env: "ORANGE_MAX_AMOUNT",
       },
-      allowedIps: {
-        doc: "Comma-separated list of allowed CIDR blocks for Orange callbacks",
-        format: String,
-        default: "",
-        env: "ORANGE_ALLOWED_IPS",
-      },
     },
     orangeMadagascar: {
       minAmount: {
@@ -163,12 +145,6 @@ export const configSchema = convict({
         default: 5000000,
         env: "ORANGE_MADAGASCAR_MAX_AMOUNT",
       },
-      allowedIps: {
-        doc: "Comma-separated list of allowed CIDR blocks for Orange Madagascar callbacks",
-        format: String,
-        default: "",
-        env: "ORANGE_MADAGASCAR_ALLOWED_IPS",
-      },
       callbackSecret: {
         doc: "Orange Madagascar callback HMAC secret for verifying incoming callbacks",
         format: String,
@@ -180,32 +156,6 @@ export const configSchema = convict({
         format: String,
         default: "X-Callback-Signature",
         env: "ORANGE_MADAGASCAR_CALLBACK_SIGNATURE_HEADER",
-      },
-    },
-    orangeGuinea: {
-      minAmount: {
-        doc: "Minimum transaction amount for Orange Guinea (GNF)",
-        format: "nat",
-        default: 100,
-        env: "ORANGE_GUINEA_MIN_AMOUNT",
-      },
-      maxAmount: {
-        doc: "Maximum transaction amount for Orange Guinea (GNF)",
-        format: "nat",
-        default: 5000000,
-        env: "ORANGE_GUINEA_MAX_AMOUNT",
-      },
-      callbackSecret: {
-        doc: "Orange Guinea callback HMAC secret for verifying incoming callbacks",
-        format: String,
-        default: "",
-        env: "ORANGE_GUINEA_CALLBACK_SECRET",
-      },
-      callbackSignatureHeader: {
-        doc: "Header used by Orange Guinea for callback signature verification",
-        format: String,
-        default: "X-Callback-Signature",
-        env: "ORANGE_GUINEA_CALLBACK_SIGNATURE_HEADER",
       },
     },
     smsPortal: {
@@ -384,10 +334,10 @@ export const configSchema = convict({
       default: 60000, // 1 minute
     },
     requestTimeoutMs: {
-      doc: "Orange API request timeout in milliseconds",
-      format: "nat",
+      doc: 'Orange API request timeout in milliseconds',
+      format: 'nat',
       default: 30000,
-      env: "ORANGE_REQUEST_TIMEOUT_MS",
+      env: 'ORANGE_REQUEST_TIMEOUT_MS',
     },
   },
 
@@ -470,35 +420,47 @@ export const configSchema = convict({
     },
   },
 
-  // Response compression
-  compression: {
-    enabled: {
-      doc: "Enable HTTP response compression",
-      format: Boolean,
-      default: true,
-      env: "COMPRESSION_ENABLED",
+  // SMS Failover Settings
+  sms: {
+    primaryProvider: {
+      doc: "Primary SMS provider (e.g. twilio, africastalking, infobip)",
+      format: String,
+      default: "twilio",
+      env: "SMS_PROVIDER",
     },
-    threshold: {
-      doc: "Minimum response size in bytes to trigger compression",
-      format: "nat",
-      default: 1024,
-      env: "COMPRESSION_THRESHOLD",
+    secondaryProvider: {
+      doc: "Secondary/fallback SMS provider",
+      format: String,
+      default: "africastalking",
+      env: "SMS_PROVIDER_SECONDARY",
     },
-    level: {
-      doc: "Gzip compression level (0-9) used by zlib",
+    timeoutMs: {
+      doc: "Timeout in milliseconds before failing over to secondary provider",
       format: "nat",
-      default: 6,
-      env: "COMPRESSION_LEVEL",
+      default: 5000,
+      env: "SMS_TIMEOUT_MS",
     },
   },
 
-  // Cross-origin request settings
-  cors: {
-    allowedOrigins: {
-      doc: "List of allowed CORS origins loaded from config files",
-      format: Array,
-      default: ["http://localhost:3000"],
-      env: "CORS_ALLOWED_ORIGINS",
+  // Response compression
+  compression: {
+    enabled: {
+      doc: 'Enable HTTP response compression',
+      format: Boolean,
+      default: true,
+      env: 'COMPRESSION_ENABLED',
+    },
+    threshold: {
+      doc: 'Minimum response size in bytes to trigger compression',
+      format: 'nat',
+      default: 1024,
+      env: 'COMPRESSION_THRESHOLD',
+    },
+    level: {
+      doc: 'Gzip compression level (0-9) used by zlib',
+      format: 'nat',
+      default: 6,
+      env: 'COMPRESSION_LEVEL',
     },
   },
 });
@@ -544,3 +506,43 @@ export function getConfigValue(key: string): any {
 }
 
 export default configSchema;
+// Cross-origin request settings
+cors: {// Worker Concurrency Configuration
+worker: {
+  concurrency: {
+    doc: "Transaction processing worker concurrency limit",
+    format: "nat",
+    default: 50,
+    env: "TRANSACTION_WORKER_CONCURRENCY",
+  },
+  syncConcurrency: {
+    doc: "Accounting sync worker concurrency limit",
+    format: "nat",
+    default: 20,
+    env: "SYNC_WORKER_CONCURRENCY",
+  },
+  webhookRetryConcurrency: {
+    doc: "Webhook retry worker concurrency limit",
+    format: "nat",
+    default: 10,
+    env: "WEBHOOK_RETRY_WORKER_CONCURRENCY",
+  },
+  accountingRetryConcurrency: {
+    doc: "Accounting retry worker concurrency limit",
+    format: "nat",
+    default: 5,
+    env: "ACCOUNTING_RETRY_WORKER_CONCURRENCY",
+  },
+  accountingTokenRefreshConcurrency: {
+    doc: "Accounting token refresh worker concurrency limit",
+    format: "nat",
+    default: 3,
+    env: "ACCOUNTING_TOKEN_REFRESH_WORKER_CONCURRENCY",
+  },
+  providerBalanceAlertConcurrency: {
+    doc: "Provider balance alert worker concurrency limit (default 1 – sequential to prevent duplicate alerts)",
+    format: "nat",
+    default: 1,
+    env: "PROVIDER_BALANCE_ALERT_WORKER_CONCURRENCY",
+  },
+},

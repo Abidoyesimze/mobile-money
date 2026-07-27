@@ -48,6 +48,25 @@
 
 ### Traffic Shape
 
+| Phase | Duration | Traffic (req/s)      | Description               |
+|-------|----------|----------------------|---------------------------|
+| 1     | 2 min    | 500 (flat)           | Baseline morning traffic  |
+| 2     | 3 min    | 500 → 3,000          | Pre-peak build-up         |
+| 3     | 5 min    | 3,000 → 8,000        | Salary-day morning spike  |
+| 4     | 10 min   | 8,000 (flat)         | Sustained peak load       |
+| 5     | 2 min    | 8,000 → 15,000       | Flash / viral burst       |
+| 6     | 5 min    | 15,000 → 2,000       | Post-spike recovery       |
+| 7     | 3 min    | 2,000 → 500          | Cool-down to baseline     |
+
+### Acceptance Thresholds
+
+| Metric                  | Threshold     |
+|-------------------------|---------------|
+| P50 latency             | < 100 ms      |
+| P95 latency             | < 500 ms      |
+| P99 latency             | < 1,000 ms    |
+| Error rate (all phases) | < 2%          |
+| Timeout count (total)   | < 500         |
 | Phase | Duration | Traffic (req/s) | Description              |
 | ----- | -------- | --------------- | ------------------------ |
 | 1     | 2 min    | 500 (flat)      | Baseline morning traffic |
@@ -87,6 +106,14 @@ The spike scenario sends varied, realistic payloads across multiple:
 
 ### Traffic Shape
 
+| Phase | Duration | Traffic (req/s) | Description            |
+|-------|----------|-----------------|------------------------|
+| 1     | 2 min    | 1,000 (flat)    | Warm-up                |
+| 2     | 3 min    | 1,000 → 5,000   | Normal load            |
+| 3     | 3 min    | 5,000 → 10,000  | Peak-day equivalent    |
+| 4     | 3 min    | 10,000 → 20,000 | Beyond peak (stress)   |
+| 5     | 3 min    | 20,000 → 30,000 | Breaking point zone    |
+| 6     | 5 min    | → 0             | Recovery observation   |
 | Phase | Duration | Traffic (req/s) | Description          |
 | ----- | -------- | --------------- | -------------------- |
 | 1     | 2 min    | 1,000 (flat)    | Warm-up              |

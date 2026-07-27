@@ -3,7 +3,7 @@ import { webhookRetryQueue, WebhookRetryJobData } from "./webhookRetryQueue";
 import { WebhookService, WebhookEvent } from "../services/webhook";
 import { TransactionModel } from "../models/transaction";
 import logger from "../utils/logger";
-import { queueOptions } from "./config";
+import { queueOptions, getWebhookRetryWorkerConcurrency } from "./config";
 
 let webhookRetryWorker: Worker<WebhookRetryJobData> | null = null;
 
@@ -87,7 +87,7 @@ export function startWebhookRetryWorker(): void {
     },
     {
       ...queueOptions,
-      concurrency: 5,
+      concurrency: getWebhookRetryWorkerConcurrency(),
     },
   );
 
