@@ -157,14 +157,14 @@ function buildCspDirectives(): Record<string, Iterable<string>> {
     // "https://cdn.example.com" — never "'unsafe-inline'" or "'unsafe-eval'".
     scriptSrc: ["'self'"],
 
-    // Styles: only same-origin.
-    styleSrc: ["'self'"],
+    // Styles: same-origin + Google Fonts stylesheet (preconnect in <head>).
+    styleSrc: ["'self'", "https://fonts.googleapis.com"],
 
     // Images: same-origin + data URIs (needed for inline SVG/img src="data:…").
     imgSrc: ["'self'", "data:"],
 
-    // Fonts: same-origin.
-    fontSrc: ["'self'"],
+    // Fonts: same-origin + Google Fonts CDN (Inter, Outfit, Fira Code families).
+    fontSrc: ["'self'", "https://fonts.gstatic.com"],
 
     // fetch(), XHR, WebSocket: same-origin + explicitly listed API origins.
     connectSrc: ["'self'", ...allowedOriginList],

@@ -623,8 +623,10 @@ function startReplicaLagMonitor(): void {
   }, REPLICA_LAG_MONITOR_INTERVAL_MS);
 }
 
-startReplicaLagMonitor();
-startDeadlockDetector(pool);
+if (process.env.NODE_ENV !== "test") {
+  startReplicaLagMonitor();
+  startDeadlockDetector(pool);
+}
 
 /**
  * Execute a read-only SQL query against a replica pool if available.

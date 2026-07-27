@@ -48,6 +48,8 @@ function buildConfig(): ProviderAuthConfig & {
   };
 }
 
+// ─── Provider ─────────────────────────────────────────────────────────────────
+
 export interface BatchPayoutItem {
   referenceId: string;
   phoneNumber: string;
