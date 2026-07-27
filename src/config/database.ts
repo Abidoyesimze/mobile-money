@@ -577,6 +577,21 @@ export async function queryRead<T extends import("pg").QueryResultRow = any>(
 }
 
 /**
+ * Specifically routes transaction log read queries (SELECT) to read-replica pool.
+ * Automatically falls back to primary database pool if replicas are offline or unreachable.
+ */
+export async function queryTransactionLogRead<T extends import("pg").QueryResultRow = any>(
+  text: string,
+  params?: unknown[],
+): Promise<import("pg").QueryResult<T>> {
+  if (!text.trim().toUpperCase().startsWith("SELECT")) {
+    // If not a read-only query, route directly to primary write pool
+    return queryWrite<T>(text, params);
+  }
+  return queryRead<T>(text, params);
+}
+
+/**
  * Execute a write SQL query (INSERT / UPDATE / DELETE) against the primary pool.
  * All writes now route through PgBouncer via the primary pool connection.
  *
