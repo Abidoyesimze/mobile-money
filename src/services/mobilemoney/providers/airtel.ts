@@ -1,3 +1,29 @@
+/**
+ * AirtelService
+ *
+ * Extends BaseProvider so that the Basic-auth credential signature and
+ * Bearer-token construction are inherited from the shared core config
+ * class rather than being duplicated inline.
+ *
+ * Also fixes a pre-existing bug where the original `authenticate()` method
+ * made two identical POST requests to `/auth/oauth2/token` — the outer call
+ * was discarded and the inner call (inside a try/catch) was used instead.
+ * The refactored implementation makes exactly one token request per refresh.
+ */
+
+import axios, { AxiosError, AxiosInstance } from "axios";
+import {
+  BaseProvider,
+  ProviderAuthConfig,
+} from "../../providers/baseProvider";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface AirtelTokenResponse {
+  access_token: string;
+  expires_in: number;
+  token_type?: string;
+}
 import axios, {
   AxiosInstance,
   AxiosError,
@@ -39,6 +65,64 @@ interface AirtelBalanceResponse {
   currency?: string;
 }
 
+// ─── Config builder ───────────────────────────────────────────────────────────
+
+function buildConfig(): ProviderAuthConfig {
+  return {
+    apiKey: process.env.AIRTEL_API_KEY ?? "",
+    apiSecret: process.env.AIRTEL_API_SECRET ?? "",
+    baseUrl: process.env.AIRTEL_BASE_URL ?? "",
+    timeoutMs: 10_000,
+  };
+}
+
+// ─── Provider ─────────────────────────────────────────────────────────────────
+
+export class AirtelService extends BaseProvider {
+  private readonly client: AxiosInstance;
+
+  constructor() {
+    super(buildConfig());
+
+    this.client = axios.create({
+      baseURL: this.baseUrl,
+      timeout: this.timeoutMs,
+    });
+  }
+
+  // ─── Authentication ─────────────────────────────────────────────────────
+
+  /**
+   * Obtain a valid Airtel bearer token, using the in-memory cache when
+   * possible. Re-authenticates when the token is absent or stale.
+   *
+   * Fixes the previous double-POST bug: exactly one HTTP request is made
+   * per token refresh, and the result is cached via the base-class helpers.
+   * `buildBasicAuthHeader()` is inherited from BaseProvider.
+   */
+  async getAccessToken(): Promise<string> {
+    if (this.isTokenValid()) {
+      return this.cachedToken!;
+    }
+
+    try {
+      const response = await this.client.post<AirtelTokenResponse>(
+        "/auth/oauth2/token",
+        null,
+        {
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: this.buildBasicAuthHeader(this.apiKey, this.apiSecret),
+          },
+        },
+      );
+
+      const { access_token, expires_in } = response.data;
+      this.cacheToken(access_token, expires_in);
+      return access_token;
+    } catch (error) {
+      console.error("Airtel auth failed", error);
+      throw new Error("Airtel authentication failed");
 interface StoredCookie {
   value: string;
   expiresAt?: number;
@@ -55,6 +139,7 @@ interface AirtelProviderConfig {
   mode?: AirtelMode;
   webBaseUrl: string;
   directBaseUrl: string;
+  sandboxBaseUrl?: string;
   loginPath: string;
   refreshPath: string;
   paymentPath: string;
@@ -88,10 +173,20 @@ interface AirtelProviderOptions extends Partial<AirtelProviderConfig> {
   proxyHttpClient?: AirtelHttpClient;
   directHttpClient?: AirtelHttpClient;
   clock?: () => number;
+  region?: string;
 }
 
 const DEFAULT_SESSION_TTL_MS = 20 * 60 * 1000;
 const DEFAULT_REFRESH_SKEW_MS = 60 * 1000;
+
+// East Africa Airtel markets and their mandatory currencies.
+// Mixing a Central/West Africa currency (e.g. XAF, NGN) with an East Africa
+// country code (or vice versa) causes silent failures at the Airtel API layer.
+const EAST_AFRICA_COUNTRY_CURRENCIES: Record<string, string> = {
+  KE: "KES",
+  TZ: "TZS",
+  UG: "UGX",
+};
 
 // ============================================================================
 // AIRTEL SERVICE
@@ -113,7 +208,10 @@ export class AirtelService {
   private sessionPromise: Promise<AirtelSessionState> | null = null;
   private readonly clock: () => number;
 
-  constructor(regionOrOptions?: string | AirtelProviderOptions, options?: AirtelProviderOptions) {
+  constructor(
+    regionOrOptions?: string | AirtelProviderOptions,
+    options?: AirtelProviderOptions,
+  ) {
     let region: string | undefined;
     let opts: AirtelProviderOptions = {};
 
@@ -129,10 +227,27 @@ export class AirtelService {
     this.config = this.buildConfig(opts);
 
     // Resolve dynamic region configuration
-    this.countryCode = (region || opts.country || process.env.AIRTEL_COUNTRY || "NG").toUpperCase();
-    this.currency = process.env[`AIRTEL_CURRENCY_${this.countryCode}`] || opts.currency || process.env.AIRTEL_CURRENCY || this.getDefaultCurrency(this.countryCode);
-    this.apiKey = process.env[`AIRTEL_API_KEY_${this.countryCode}`] || opts.apiKey || process.env.AIRTEL_API_KEY || "";
-    this.apiSecret = process.env[`AIRTEL_API_SECRET_${this.countryCode}`] || opts.apiSecret || process.env.AIRTEL_API_SECRET || "";
+    this.countryCode = (
+      region ||
+      opts.country ||
+      process.env.AIRTEL_COUNTRY ||
+      "NG"
+    ).toUpperCase();
+    this.currency =
+      process.env[`AIRTEL_CURRENCY_${this.countryCode}`] ||
+      opts.currency ||
+      process.env.AIRTEL_CURRENCY ||
+      this.getDefaultCurrency(this.countryCode);
+    this.apiKey =
+      process.env[`AIRTEL_API_KEY_${this.countryCode}`] ||
+      opts.apiKey ||
+      process.env.AIRTEL_API_KEY ||
+      "";
+    this.apiSecret =
+      process.env[`AIRTEL_API_SECRET_${this.countryCode}`] ||
+      opts.apiSecret ||
+      process.env.AIRTEL_API_SECRET ||
+      "";
 
     // Update config with resolved region values
     this.config.country = this.countryCode;
@@ -142,7 +257,10 @@ export class AirtelService {
 
     // Apply country prefix routing to config paths
     const prefix = `/${this.countryCode.toLowerCase()}`;
-    if (this.config.paymentPath && !this.config.paymentPath.startsWith(prefix)) {
+    if (
+      this.config.paymentPath &&
+      !this.config.paymentPath.startsWith(prefix)
+    ) {
       this.config.paymentPath = `${prefix}${this.config.paymentPath}`;
     }
     if (this.config.payoutPath && !this.config.payoutPath.startsWith(prefix)) {
@@ -171,7 +289,7 @@ export class AirtelService {
         validateStatus: () => true,
       });
 
-    if (this.config.proxyBaseUrl) {
+    if (this.config.proxyBaseUrl || opts.proxyHttpClient) {
       this.proxyClient =
         opts.proxyHttpClient ??
         axios.create({
@@ -181,19 +299,58 @@ export class AirtelService {
         });
     }
 
-    logger.info({ mode: this.mode, country: this.countryCode }, "AirtelService initialized");
+    logger.info(
+      { mode: this.mode, country: this.countryCode },
+      "AirtelService initialized",
+    );
   }
 
+  // ─── Retry helper ────────────────────────────────────────────────────────
+
+  private async withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
+    let lastError: Error | undefined;
   private getDefaultCurrency(country: string): string {
     switch (country.toUpperCase()) {
-      case "KE": return "KES";
-      case "UG": return "UGX";
-      case "TZ": return "TZS";
-      case "NG": return "NGN";
-      default: return "NGN";
+      case "KE":
+        return "KES";
+      case "UG":
+        return "UGX";
+      case "TZ":
+        return "TZS";
+      case "NG":
+        return "NGN";
+      default:
+        return "NGN";
     }
   }
 
+  private validateEastAfricaCurrency(): void {
+    const country = this.countryCode.toUpperCase();
+    const expectedCurrency = EAST_AFRICA_COUNTRY_CURRENCIES[country];
+    if (!expectedCurrency) return;
+    if (this.currency !== expectedCurrency) {
+      throw new Error(
+        `Airtel East Africa: country "${country}" requires currency "${expectedCurrency}" ` +
+          `but is configured with "${this.currency}". ` +
+          `Set AIRTEL_CURRENCY_${country}=${expectedCurrency} or pass currency: "${expectedCurrency}" in options.`,
+      );
+    }
+  }
+
+        if (axiosError.response?.status === 401) {
+          // Force token refresh on the next attempt
+          this.invalidateToken();
+        }
+
+        if (
+          (axiosError.response?.status !== undefined &&
+            axiosError.response.status >= 500) ||
+          (err as { code?: string }).code === "ECONNABORTED"
+        ) {
+          console.warn(`Retrying Airtel request (${i + 1})`);
+          await new Promise((res) => setTimeout(res, 1000 * (i + 1)));
+          continue;
+        }
   // =========================================================================
   // CONFIGURATION
   // =========================================================================
@@ -212,7 +369,11 @@ export class AirtelService {
         options.baseUrl ??
         process.env.AIRTEL_DIRECT_BASE_URL ??
         "https://openapi.airtel.africa",
-      sandboxBaseUrl: options.sandboxBaseUrl ?? options.baseUrl ?? process.env.AIRTEL_SANDBOX_BASE_URL ?? "",
+      sandboxBaseUrl:
+        options.sandboxBaseUrl ??
+        options.baseUrl ??
+        process.env.AIRTEL_SANDBOX_BASE_URL ??
+        "",
       loginPath: options.loginPath ?? process.env.AIRTEL_LOGIN_PATH ?? "/login",
       refreshPath:
         options.refreshPath ??
@@ -269,7 +430,7 @@ export class AirtelService {
   }
 
   private resolveMode(): AirtelMode {
-    if (this.config.proxyBaseUrl) {
+    if (this.config.mode === "proxy" || this.config.proxyBaseUrl) {
       return "proxy";
     }
 
@@ -304,6 +465,7 @@ export class AirtelService {
     const startTime = Date.now();
 
     try {
+      this.validateEastAfricaCurrency();
       const reference = `AIRTEL-${Date.now()}`;
 
       const response =
@@ -363,11 +525,17 @@ export class AirtelService {
     const startTime = Date.now();
 
     try {
+      this.validateEastAfricaCurrency();
       const reference = `AIRTEL-PAYOUT-${Date.now()}`;
 
       const response =
         this.mode === "proxy"
-          ? await this.executeViaProxy("payout", formattedPhoneNumber, amount, reference)
+          ? await this.executeViaProxy(
+              "payout",
+              formattedPhoneNumber,
+              amount,
+              reference,
+            )
           : this.mode === "web"
             ? await this.executeViaWebSession(
                 "payout",
@@ -407,6 +575,77 @@ export class AirtelService {
     }
   }
 
+  // ─── API operations ──────────────────────────────────────────────────────
+
+  async requestPayment(phoneNumber: string, amount: string) {
+    const token = await this.getAccessToken();
+    const reference = `AIRTEL-${Date.now()}`;
+
+    return this.withRetry(async () => {
+      try {
+        const response = await this.client.post<AirtelResponse>(
+          "/merchant/v1/payments/",
+          {
+            reference,
+            subscriber: {
+              country: process.env.AIRTEL_COUNTRY ?? "NG",
+              currency: process.env.AIRTEL_CURRENCY ?? "NGN",
+              msisdn: phoneNumber,
+            },
+            transaction: {
+              amount: parseFloat(amount),
+              country: process.env.AIRTEL_COUNTRY ?? "NG",
+              currency: process.env.AIRTEL_CURRENCY ?? "NGN",
+              id: reference,
+            },
+          },
+          {
+            headers: {
+              Authorization: this.buildBearerAuthHeader(token),
+              "X-Country": process.env.AIRTEL_COUNTRY ?? "NG",
+              "X-Currency": process.env.AIRTEL_CURRENCY ?? "NGN",
+            },
+          },
+        );
+
+        return { success: true, data: response.data };
+      } catch (error) {
+        return { success: false, error };
+      }
+    });
+  }
+
+  async sendPayout(phoneNumber: string, amount: string) {
+    const token = await this.getAccessToken();
+    const reference = `AIRTEL-PAYOUT-${Date.now()}`;
+
+    return this.withRetry(async () => {
+      try {
+        const response = await this.client.post<AirtelResponse>(
+          "/standard/v1/disbursements/",
+          {
+            reference,
+            payee: { msisdn: phoneNumber },
+            transaction: {
+              amount: parseFloat(amount),
+              id: reference,
+            },
+          },
+          {
+            headers: {
+              Authorization: this.buildBearerAuthHeader(token),
+              "X-Country": process.env.AIRTEL_COUNTRY ?? "NG",
+              "X-Currency": process.env.AIRTEL_CURRENCY ?? "NGN",
+            },
+          },
+        );
+
+        return { success: true, data: response.data };
+      } catch (error) {
+        return { success: false, error };
+      }
+    });
+  }
   /**
    * =========================
    * REQUEST PAYMENT (COLLECTION)
@@ -422,7 +661,7 @@ export class AirtelService {
       const txStatus = String(
         (result.data as AirtelResponse)?.data?.transaction?.status ?? "",
       ).toUpperCase();
-      // Airtel status codes: TS = success, TF = failed, TP = pending
+      // TS = success, TF = failed, TP = pending
       if (txStatus === "TS") return { status: "completed" };
       if (txStatus === "TF") return { status: "failed" };
       if (txStatus === "TP") return { status: "pending" };
@@ -433,6 +672,17 @@ export class AirtelService {
   }
 
   async checkStatus(reference: string) {
+    const token = await this.getAccessToken();
+
+    return this.withRetry(async () => {
+      try {
+        const response = await this.client.get(
+          `/standard/v1/payments/${reference}`,
+          {
+            headers: {
+              Authorization: this.buildBearerAuthHeader(token),
+              "X-Country": process.env.AIRTEL_COUNTRY ?? "NG",
+              "X-Currency": process.env.AIRTEL_CURRENCY ?? "NGN",
     return this.mode === "proxy"
       ? this.checkStatusViaProxy(reference)
       : this.mode === "web"
@@ -459,9 +709,7 @@ export class AirtelService {
 
     const authHeader =
       "Basic " +
-      Buffer.from(`${this.apiKey}:${this.apiSecret}`).toString(
-        "base64",
-      );
+      Buffer.from(`${this.apiKey}:${this.apiSecret}`).toString("base64");
 
     const response = await this.sendRequest(this.directClient, {
       method: "POST",
@@ -603,6 +851,21 @@ export class AirtelService {
     return this.toProviderResult(response, reference);
   }
 
+  async getOperationalBalance() {
+    const token = await this.getAccessToken();
+
+    return this.withRetry(async () => {
+      try {
+        const response = await this.client.get<AirtelBalanceResponse>(
+          "/standard/v1/users/balance",
+          {
+            headers: {
+              Authorization: this.buildBearerAuthHeader(token),
+              "X-Country": process.env.AIRTEL_COUNTRY ?? "NG",
+              "X-Currency": process.env.AIRTEL_CURRENCY ?? "NGN",
+            },
+          },
+        );
   private async getBalanceViaDirect(): Promise<{
     success: boolean;
     data?: { availableBalance: number; currency: string };
@@ -660,6 +923,19 @@ export class AirtelService {
           return this.refreshSession(cached);
         }
 
+        return {
+          success: true,
+          data: {
+            availableBalance,
+            currency:
+              response.data.data?.currency ??
+              response.data.currency ??
+              process.env.AIRTEL_CURRENCY ??
+              "NGN",
+          },
+        };
+      } catch (error) {
+        return { success: false, error };
         return cached;
       }
     }

@@ -74,12 +74,25 @@ export class GDPRService {
       archive.pipe(passthrough);
 
       // Append each export file directly as in-memory buffers — no disk I/O.
-      archive.append(Buffer.from(JSON.stringify(this.serializeUser(user!), null, 2), "utf8"), {
-        name: "profile.json",
-      });
-      archive.append(Buffer.from(JSON.stringify(txs.map(tx => this.serializeTransaction(tx)), null, 2), "utf8"), {
-        name: "transactions.json",
-      });
+      archive.append(
+        Buffer.from(JSON.stringify(this.serializeUser(user!), null, 2), "utf8"),
+        {
+          name: "profile.json",
+        },
+      );
+      archive.append(
+        Buffer.from(
+          JSON.stringify(
+            txs.map((tx) => this.serializeTransaction(tx)),
+            null,
+            2,
+          ),
+          "utf8",
+        ),
+        {
+          name: "transactions.json",
+        },
+      );
 
       archive.finalize();
     });
@@ -131,7 +144,7 @@ export class GDPRService {
       for (const tx of transactions) {
         const anonymizedTx = this.anonymizeTransaction(tx);
         await pool.query(
-          `UPDATE transactions SET phone_number = $1, idempotency_key = $2, stellar_address = $3 WHERE id = $4`,
+          `UPDATE transactions SET phone_number = $1, idempotency_key = $2, stellar_address = $3, metadata = '{}', location_metadata = NULL WHERE id = $4`,
           [
             anonymizedTx.phoneNumber,
             anonymizedTx.idempotencyKey,
@@ -224,7 +237,7 @@ export class GDPRService {
         const hashedStellar = this.hashString("purged_stellar_address");
 
         await pool.query(
-          `UPDATE transactions SET phone_number = $1, stellar_address = $2, idempotency_key = $3 WHERE id = $4`,
+          `UPDATE transactions SET phone_number = $1, stellar_address = $2, idempotency_key = $3, metadata = '{}', location_metadata = NULL WHERE id = $4`,
           [hashedPhone, hashedStellar, hashedIdempotency, row.id],
         );
         transactionsAnonymized++;
@@ -282,9 +295,8 @@ export class GDPRService {
       });
       const result = await s3.send(listCmd);
       const objects =
-        result.Contents?.filter((obj) =>
-          obj.Key?.includes(`/${userId}/`),
-        ) ?? [];
+        result.Contents?.filter((obj) => obj.Key?.includes(`/${userId}/`)) ??
+        [];
       for (const obj of objects) {
         if (obj.Key) {
           const delCmd = new DeleteObjectCommand({

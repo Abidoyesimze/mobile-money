@@ -79,6 +79,15 @@ export class StellarService {
     }
   }
 
+  private async getNetworkBaseFee(): Promise<number> {
+    try {
+      if (this.isMockMode) return 100;
+      return await this.server.fetchBaseFee();
+    } catch {
+      return 100; // default base fee
+    }
+  }
+
   /**
    * Ping the configured Horizon server to verify reachability.
    * Throws if the server cannot be reached within the timeout.
@@ -90,14 +99,17 @@ export class StellarService {
     }
 
     try {
-      const callPromise = this.server.root().call();
+      const callPromise = this.server.fetchBaseFee();
       const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error("Horizon ping timeout")), timeoutMs),
       );
 
       await Promise.race([callPromise, timeoutPromise]);
     } catch (err) {
-      console.error("Horizon server unreachable:", err instanceof Error ? err.message : err);
+      console.error(
+        "Horizon server unreachable:",
+        err instanceof Error ? err.message : err,
+      );
       throw err;
     }
   }
@@ -146,6 +158,68 @@ export class StellarService {
     }
   }
 
+  /**
+   * Creates a new account on the Stellar network.
+   * Verifies minimum deposit and funding bounds.
+   */
+  async createAccount(
+    newAccountAddress: string,
+    startingBalance: string,
+  ): Promise<{ hash?: string }> {
+    if (!this.issuerKeypair) {
+      throw new Error("Funding key is empty");
+    }
+
+    if (parseFloat(startingBalance) < 1) {
+      throw new Error("Minimum deposit amount must be at least 1 XLM");
+    }
+
+    const funderBalance = await this.getBalance(this.issuerKeypair.publicKey());
+    if (parseFloat(funderBalance) < parseFloat(startingBalance) + 1) {
+      throw new Error("Insufficient funding balance bounds");
+    }
+
+    if (this.isMockMode) {
+      console.log("Mock Stellar account creation:", {
+        destination: newAccountAddress,
+        startingBalance,
+      });
+      return { hash: "mock_create_account_hash" };
+    }
+
+    try {
+      const account = await this.server.loadAccount(
+        this.issuerKeypair.publicKey(),
+      );
+      const baseFee = await this.getNetworkBaseFee();
+
+      const transaction = new StellarSdk.TransactionBuilder(account, {
+        fee: baseFee.toString(),
+        networkPassphrase: getNetworkPassphrase(),
+      })
+        .addOperation(
+          StellarSdk.Operation.createAccount({
+            destination: newAccountAddress,
+            startingBalance: startingBalance,
+          }),
+        )
+        .setTimeout(30)
+        .build();
+
+      transaction.sign(this.issuerKeypair);
+      const response = await this.server.submitTransaction(transaction);
+
+      console.log("Stellar account creation successful", {
+        hash: response.hash,
+      });
+
+      return { hash: response.hash };
+    } catch (error) {
+      logger.error("Stellar account creation failed:", error);
+      throw error;
+    }
+  }
+
   async sendPayment(
     destinationAddress: string,
     amount: string,
@@ -185,7 +259,10 @@ export class StellarService {
           );
         } catch (error) {
           // If it's a SanctionScreeningError, re-throw it
-          if (error instanceof Error && error.name === "SanctionScreeningError") {
+          if (
+            error instanceof Error &&
+            error.name === "SanctionScreeningError"
+          ) {
             throw error;
           }
           // Log other errors but don't fail if address validation fails
@@ -429,7 +506,8 @@ export class StellarService {
       })
         .addOperation(
           StellarSdk.Operation.setOptions({
-            setFlags: StellarSdk.xdr.AccountFlags.authClawbackEnabledFlag().value,
+            setFlags:
+              StellarSdk.xdr.AccountFlags.authClawbackEnabledFlag().value,
           }),
         )
         .setTimeout(30)
@@ -466,7 +544,13 @@ export class StellarService {
 
     if (this.isMockMode || !this.issuerKeypair) {
       console.log("Mock Stellar clawback:", { fromAddress, amount });
-      await this.logClawbackToAudit("mock_clawback_hash", fromAddress, amount, adminId, true);
+      await this.logClawbackToAudit(
+        "mock_clawback_hash",
+        fromAddress,
+        amount,
+        adminId,
+        true,
+      );
       return { hash: "mock_clawback_hash" };
     }
 
@@ -494,13 +578,26 @@ export class StellarService {
       console.log("Stellar clawback successful", { hash: response.hash });
 
       // Log to audit trail
-      await this.logClawbackToAudit(response.hash, fromAddress, amount, adminId, true);
+      await this.logClawbackToAudit(
+        response.hash,
+        fromAddress,
+        amount,
+        adminId,
+        true,
+      );
 
       return { hash: response.hash };
     } catch (error) {
       logger.error("Stellar clawback failed:", error);
       // Log failed attempt
-      await this.logClawbackToAudit(null, fromAddress, amount, adminId, false, error);
+      await this.logClawbackToAudit(
+        null,
+        fromAddress,
+        amount,
+        adminId,
+        false,
+        error,
+      );
       throw error;
     }
   }
@@ -518,13 +615,13 @@ export class StellarService {
   ): Promise<void> {
     try {
       const { pool } = await import("../../config/database.js");
-      
+
       const auditData = {
         transaction_hash: txHash,
         from_address: fromAddress,
         amount: amount,
         success: success,
-        error_message: error ? (error.message || String(error)) : null,
+        error_message: error ? error.message || String(error) : null,
       };
 
       await pool.query(
@@ -536,7 +633,7 @@ export class StellarService {
           "stellar_clawback",
           txHash || "failed",
           JSON.stringify(auditData),
-        ]
+        ],
       );
     } catch (auditError) {
       logger.error("Failed to write clawback audit log:", auditError);
@@ -547,8 +644,10 @@ export class StellarService {
 
 // Added startEventSubscription to initialize Horizon event subscription
 import { startEventSubscription } from "./escrowEventSubscriber";
+import { initializeContractArchiver } from "./contractArchiver";
 
 // Export function to start event subscription (called from application bootstrap)
 export function initializeEscrowEventProcessing() {
   startEventSubscription();
+  initializeContractArchiver();
 }

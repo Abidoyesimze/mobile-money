@@ -1,7 +1,7 @@
 import { Command } from "commander";
-import chalk from "chalk";
 import { runSetupWizard } from "../setupWizard";
-import { printError } from "../dashboard";
+import { printError, printWarn } from "../dashboard";
+import { formatSuccess } from "../utils/cliFormatting";
 
 export function registerSetupCommand(program: Command): void {
   program
@@ -10,13 +10,11 @@ export function registerSetupCommand(program: Command): void {
     .action(async () => {
       try {
         const config = await runSetupWizard();
-        console.log(
-          `${chalk.green("✓")} Saved ${chalk.cyan("cli/.momorc")} for ${chalk.bold(config.apiUrl)}`,
-        );
+        console.log(formatSuccess(`Saved cli/.momorc for ${config.apiUrl}`));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg === "Setup cancelled") {
-          process.stderr.write(`${chalk.yellow("⚠")} Setup cancelled.\n`);
+          printWarn("Setup cancelled.");
           return;
         }
 

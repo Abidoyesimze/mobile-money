@@ -5,6 +5,7 @@ import {
   WebhookDeliveryLog,
 } from "../models/merchantWebhook";
 import { SAMPLE_WEBHOOK_PAYLOAD } from "../routes/webhooks";
+import { WebhookCacheInvalidation } from "./cacheAside";
 
 const model = new MerchantWebhookModel();
 
@@ -63,7 +64,12 @@ async function deliver(
     const responseBody = await response.text().catch(() => "");
 
     if (response.ok) {
-      return { status: "delivered", httpStatus: response.status, responseBody, durationMs };
+      return {
+        status: "delivered",
+        httpStatus: response.status,
+        responseBody,
+        durationMs,
+      };
     }
     return {
       status: "failed",
@@ -103,7 +109,12 @@ export class MerchantWebhookService {
       timestamp: new Date().toISOString(),
     };
 
-    const result = await deliver(webhook.url, webhook.secret, payload, this.fetchImpl);
+    const result = await deliver(
+      webhook.url,
+      webhook.secret,
+      payload,
+      this.fetchImpl,
+    );
 
     const log = await model.insertDeliveryLog({
       webhookId: webhook.id,
@@ -130,11 +141,19 @@ export class MerchantWebhookService {
     payload: Record<string, unknown>,
   ): Promise<void> {
     const webhooks = await model.findByUserId(userId);
-    const active = webhooks.filter((w) => w.isActive && w.events.includes(eventType));
+    const active = webhooks.filter(
+      (w) => w.isActive && w.events.includes(eventType),
+    );
 
     await Promise.allSettled(
       active.map(async (webhook) => {
-        const result = await deliver(webhook.url, webhook.secret, payload, this.fetchImpl);
+        const result = await deliver(
+          webhook.url,
+          webhook.secret,
+          payload,
+          this.fetchImpl,
+        );
+
         await model.insertDeliveryLog({
           webhookId: webhook.id,
           eventType,
@@ -146,6 +165,15 @@ export class MerchantWebhookService {
           durationMs: result.durationMs,
           isTest: false,
         });
+
+        // Invalidate merchant config caches on successful webhook delivery
+        // This ensures fresh settings are loaded after webhook recovery
+        if (result.status === "delivered") {
+          await WebhookCacheInvalidation.invalidateOnWebhookRecovery(
+            userId,
+            webhook.id,
+          );
+        }
       }),
     );
   }

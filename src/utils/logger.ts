@@ -1,8 +1,11 @@
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-import pino, { DestinationStream, Level, Logger, StreamEntry } from 'pino';
-import { REDACT_KEYS } from './redact';
+import fs from "fs";
+import path from "path";
+import os from "os";
+import pino, { DestinationStream, Level, Logger, StreamEntry } from "pino";
+import { REDACT_KEYS } from "./redact";
+import { AsyncLocalStorage } from "async_hooks";
+
+export const requestContext = new AsyncLocalStorage<{ trace_id: string }>();
 
 /**
  * Centralized Pino Logger — feature/centralized-logging
@@ -26,12 +29,12 @@ import { REDACT_KEYS } from './redact';
  * transport sees them.
  */
 
-const SERVICE_NAME = process.env.SERVICE_NAME ?? 'mobile-money-api';
+const SERVICE_NAME = process.env.SERVICE_NAME ?? "mobile-money-api";
 const INSTANCE_ID = `${os.hostname()}:${process.pid}`;
 type RotatingStreamFactory = (
   filename: string | ((time: number | Date, index?: number) => string),
   options?: {
-    compress?: 'gzip';
+    compress?: "gzip";
     history?: string;
     maxFiles?: number;
     path?: string;
@@ -39,28 +42,196 @@ type RotatingStreamFactory = (
   },
 ) => DestinationStream;
 
-
-const LOG_LEVEL = (process.env.LOG_LEVEL ?? 'info') as Level;
-const LOG_DIR = process.env.LOG_DIR ?? path.join(process.cwd(), 'logs');
-const LOG_FILE_SIZE = process.env.LOG_FILE_SIZE ?? '10M';
+const LOG_LEVEL = (process.env.LOG_LEVEL ?? "info") as Level;
+const LOG_DIR = process.env.LOG_DIR ?? path.join(process.cwd(), "logs");
+const LOG_FILE_SIZE = process.env.LOG_FILE_SIZE ?? "10M";
 const configuredRetention = Number(process.env.LOG_FILE_RETENTION ?? 14);
-const LOG_FILE_RETENTION = Number.isFinite(configuredRetention) ? configuredRetention : 14;
+const LOG_FILE_RETENTION = Number.isFinite(configuredRetention)
+  ? configuredRetention
+  : 14;
+const SCRUB_CENSOR = "[REDACTED]";
+
+// ---------------------------------------------------------------------------
+// Global regex scrub filters — applied inside every transport so secrets
+// never reach stdout, rotating files, or Loki regardless of log verbosity.
+// ---------------------------------------------------------------------------
+
+/** Extra PII master-key field names not covered by generic REDACT_KEYS. */
+const PII_MASTER_KEY_FIELDS = [
+  "pii_master_key",
+  "piiMasterKey",
+  "PII_MASTER_KEY",
+  "db_encryption_key",
+  "dbEncryptionKey",
+  "DB_ENCRYPTION_KEY",
+];
+
+/** User PII parameter field names to redact in logs */
+export const PII_USER_FIELDS = [
+  "email",
+  "e_mail",
+  "user_email",
+  "userEmail",
+  "phone",
+  "phoneNumber",
+  "phone_number",
+  "mobile",
+  "msisdn",
+  "telephone",
+  "first_name",
+  "firstName",
+  "last_name",
+  "lastName",
+  "display_name",
+  "displayName",
+  "full_name",
+  "fullName",
+  "user_name",
+  "userName",
+];
+
+type ScrubFilter = { pattern: RegExp; replacement: string };
+
+function buildJsonKeyValueScrubFilters(keys: string[]): ScrubFilter[] {
+  return keys.flatMap((key) => {
+    const escaped = key.replace(/[_-]/g, "[_-]?");
+    return [
+      {
+        pattern: new RegExp(
+          `("${escaped}"\\s*:\\s*")([^"\\\\]*(?:\\\\.[^"\\\\]*)*)(")`,
+          "gi",
+        ),
+        replacement: `$1${SCRUB_CENSOR}$3`,
+      },
+      {
+        pattern: new RegExp(`('${escaped}'\\s*:\\s*')([^']*)(')`, "gi"),
+        replacement: `$1${SCRUB_CENSOR}$3`,
+      },
+    ];
+  });
+}
+
+const PII_SCRUB_REGEX_FILTERS: ScrubFilter[] = [
+  ...buildJsonKeyValueScrubFilters([
+    ...REDACT_KEYS,
+    ...PII_MASTER_KEY_FIELDS,
+    ...PII_USER_FIELDS,
+  ]),
+  // Bearer tokens embedded in message strings
+  {
+    pattern: /Bearer\s+[A-Za-z0-9\-._~+/]+=*/g,
+    replacement: `Bearer ${SCRUB_CENSOR}`,
+  },
+  // Stellar secret keys (S…)
+  {
+    pattern: /\bS[A-Z2-7]{55}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Standalone email addresses
+  {
+    pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Standalone international phone numbers (E.164: + followed by 8-15 digits)
+  {
+    pattern: /\+1?\d{9,14}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // JWT tokens anywhere in text (three base64url segments separated by dots)
+  {
+    pattern: /\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Hex-encoded private keys (64+ consecutive hex chars — likely 256-bit keys)
+  {
+    pattern: /\b[a-fA-F0-9]{64,}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Base64-encoded secrets (40+ base64 chars — likely encrypted payloads)
+  {
+    pattern: /\b[A-Za-z0-9+/]{40,}={0,2}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Stellar public addresses (G… 56 chars) — redact from logs to prevent
+  // address correlation via log aggregation
+  {
+    pattern: /\bG[A-Z2-7]{55}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Stellar transaction hash or hex identifiers (64 hex chars)
+  {
+    pattern: /\b[a-f0-9]{64}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Stellar base64 transaction envelope XDR (long base64 with +/=)
+  {
+    pattern: /\bAAAA[A-Za-z0-9+/=]{100,}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+];
+
+const PII_KEY_VALUE_PATTERN =
+  /\b(master[_-]?key|pii[_-]?master[_-]?key|db[_-]?encryption[_-]?key|email|user[_-]?email|phone[_-]?number|phone|msisdn|mobile|first[_-]?name|last[_-]?name|display[_-]?name|full[_-]?name|user[_-]?name)\s*[=:]\s*['"]?[^\s'",}]+['"]?/gi;
+
+export function scrubLogOutput(chunk: string): string {
+  let result = chunk.replace(
+    PII_KEY_VALUE_PATTERN,
+    (match, key: string) => `${key}=${SCRUB_CENSOR}`,
+  );
+
+  for (const { pattern, replacement } of PII_SCRUB_REGEX_FILTERS) {
+    pattern.lastIndex = 0;
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+
+/** Express middleware for sanitizing PII in request payloads and parameters */
+export function logSanitizerMiddleware(req: any, res: any, next: any): void {
+  if (req.body && typeof req.body === "object") {
+    try {
+      req.body = JSON.parse(scrubLogOutput(JSON.stringify(req.body)));
+    } catch {}
+  }
+  if (req.query && typeof req.query === "object") {
+    try {
+      req.query = JSON.parse(scrubLogOutput(JSON.stringify(req.query)));
+    } catch {}
+  }
+  if (req.params && typeof req.params === "object") {
+    try {
+      req.params = JSON.parse(scrubLogOutput(JSON.stringify(req.params)));
+    } catch {}
+  }
+  if (typeof next === "function") next();
+}
+
+/** Wrap any pino destination so regex scrubbing runs before the transport prints. */
+function wrapStreamWithScrubbing(stream: DestinationStream): DestinationStream {
+  return {
+    write(msg: string) {
+      stream.write(scrubLogOutput(msg));
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Transport configuration
 // ---------------------------------------------------------------------------
 
 function formatShardDate(date: Date): string {
-  return date.toISOString().replace(/[:.]/g, '-');
+  return date.toISOString().replace(/[:.]/g, "-");
 }
 
 function logFileName(time: number | Date, index?: number): string {
   if (!time) {
-    return 'app.log';
+    return "app.log";
   }
 
-  const shardDate = formatShardDate(time instanceof Date ? time : new Date(time));
-  const shardIndex = index ? `.${index}` : '';
+  const shardDate = formatShardDate(
+    time instanceof Date ? time : new Date(time),
+  );
+  const shardIndex = index ? `.${index}` : "";
 
   return `app-${shardDate}${shardIndex}.log`;
 }
@@ -72,16 +243,16 @@ function ensureLogDirectory(): void {
 function buildFileStream(): DestinationStream {
   ensureLogDirectory();
 
-  const { createStream } = require('rotating-file-stream') as {
+  const { createStream } = require("rotating-file-stream") as {
     createStream: RotatingStreamFactory;
   };
 
   return createStream(logFileName, {
     path: LOG_DIR,
     size: LOG_FILE_SIZE,
-    compress: 'gzip',
+    compress: "gzip",
     maxFiles: LOG_FILE_RETENTION,
-    history: 'app.log.history',
+    history: "app.log.history",
   });
 }
 
@@ -98,18 +269,18 @@ function buildStreams(): StreamEntry[] | undefined {
 
   // In test environments skip all transports — tests use the raw pino
   // instance and should not attempt network connections.
-  if (process.env.NODE_ENV === 'test') {
+  if (process.env.NODE_ENV === "test") {
     return undefined;
   }
 
   const streams: StreamEntry[] = [
     {
       level: LOG_LEVEL,
-      stream: process.stdout,
+      stream: wrapStreamWithScrubbing(process.stdout),
     },
     {
       level: LOG_LEVEL,
-      stream: buildFileStream(),
+      stream: wrapStreamWithScrubbing(buildFileStream()),
     },
   ];
 
@@ -117,21 +288,23 @@ function buildStreams(): StreamEntry[] | undefined {
     streams.push({
       // pino-loki runs in a worker thread — fully async, non-blocking
       level: LOG_LEVEL,
-      stream: pino.transport({
-        target: 'pino-loki',
-        options: {
-          host: lokiHost,
-          // Gracefully handle connection failures — never throw into the app
-          silenceErrors: true,
-          labels: {
-            service: SERVICE_NAME,
-            env: process.env.NODE_ENV ?? 'development',
+      stream: wrapStreamWithScrubbing(
+        pino.transport({
+          target: "pino-loki",
+          options: {
+            host: lokiHost,
+            // Gracefully handle connection failures — never throw into the app
+            silenceErrors: true,
+            labels: {
+              service: SERVICE_NAME,
+              env: process.env.NODE_ENV ?? "development",
+            },
+            // Batch up to 10 log lines or flush every 5 s, whichever comes first
+            batching: true,
+            interval: 5,
           },
-          // Batch up to 10 log lines or flush every 5 s, whichever comes first
-          batching: true,
-          interval: 5,
-        },
-      }),
+        }),
+      ),
     });
   }
 
@@ -161,6 +334,11 @@ const logger: Logger = pino(
       instance_id: INSTANCE_ID,
     },
 
+    mixin() {
+      const store = requestContext.getStore();
+      return store && store.trace_id ? { trace_id: store.trace_id } : {};
+    },
+
     // Format the level as uppercase string for Loki/Grafana label filters
     formatters: {
       level: (label) => ({ level: label.toUpperCase() }),
@@ -170,11 +348,19 @@ const logger: Logger = pino(
     redact: {
       paths: [
         ...REDACT_KEYS,
+        ...PII_MASTER_KEY_FIELDS,
+        ...PII_USER_FIELDS,
         ...REDACT_KEYS.map((key) => `*.${key}`),
+        ...PII_MASTER_KEY_FIELDS.map((key) => `*.${key}`),
+        ...PII_USER_FIELDS.map((key) => `*.${key}`),
         ...REDACT_KEYS.map((key) => `req.headers.${key}`),
         ...REDACT_KEYS.map((key) => `*.req.headers.${key}`),
+        ...PII_MASTER_KEY_FIELDS.map((key) => `req.headers.${key}`),
+        ...PII_MASTER_KEY_FIELDS.map((key) => `*.req.headers.${key}`),
+        ...PII_USER_FIELDS.map((key) => `req.headers.${key}`),
+        ...PII_USER_FIELDS.map((key) => `*.req.headers.${key}`),
       ],
-      censor: '[REDACTED]',
+      censor: SCRUB_CENSOR,
     },
 
     // ISO-8601 timestamps
@@ -183,7 +369,20 @@ const logger: Logger = pino(
   streams ? pino.multistream(streams, { dedupe: true }) : undefined,
 );
 
-export default logger;
+export type RelaxedLogger = Omit<
+  Logger,
+  "fatal" | "error" | "warn" | "info" | "debug" | "trace"
+> & {
+  fatal: (msg: string | object, ...args: any[]) => void;
+  error: (msg: string | object, ...args: any[]) => void;
+  warn: (msg: string | object, ...args: any[]) => void;
+  info: (msg: string | object, ...args: any[]) => void;
+  debug: (msg: string | object, ...args: any[]) => void;
+  trace: (msg: string | object, ...args: any[]) => void;
+};
+
+const relaxedLogger = logger as unknown as RelaxedLogger;
+export default relaxedLogger;
 
 /**
  * Create a child logger pre-bound with a trace_id.
@@ -192,6 +391,9 @@ export default logger;
  *   const reqLogger = childLogger(req.headers['x-trace-id'] as string);
  *   reqLogger.info({ path: req.path }, 'incoming request');
  */
-export function childLogger(traceId: string, extra?: Record<string, unknown>): Logger {
+export function childLogger(
+  traceId: string,
+  extra?: Record<string, unknown>,
+): any {
   return logger.child({ trace_id: traceId, ...extra });
 }

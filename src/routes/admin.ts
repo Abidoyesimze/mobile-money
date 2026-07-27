@@ -47,11 +47,15 @@ import {
   ComplianceDocumentUpdateInput,
 } from "../models/complianceDocument";
 import { providerSettingsService } from "../services/providerSettingsService";
+import { ProviderConfigCacheInvalidation } from "../services/cacheAside";
 import { resetCircuitBreakerForProvider } from "../utils/circuitBreaker";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { createError } from "../middleware/errorHandler";
 
+import adminControllerRouter from "../controllers/adminController";
+
 const router = Router();
+router.use("/monitoring", adminControllerRouter);
 const IMPERSONATION_TOKEN_EXPIRES_IN = "15m";
 const IMPERSONATION_TOKEN_TTL_MS = 15 * 60 * 1000;
 const READ_ONLY_IMPERSONATION_MESSAGE = "Read-only mode active";
@@ -3000,9 +3004,20 @@ router.put(
         fallback_order || null,
       );
 
+      // 1. Reset the circuit breaker so the new settings take effect immediately.
       resetCircuitBreakerForProvider(providerName);
 
-      res.json({ message: "Provider settings updated successfully", settings });
+      // 2. Invalidate all caches that reference this provider's config across
+      //    every cluster instance (L1 + Redis L2 + Pub/Sub broadcast).
+      await ProviderConfigCacheInvalidation.invalidateOnConfigModification(
+        providerName,
+      );
+
+      res.json({
+        message: "Provider settings updated successfully",
+        settings,
+        invalidatedAt: new Date().toISOString(),
+      });
     } catch (error) {
       logger.error("Error updating provider settings:", error);
       res.status(500).json({ message: "Failed to update provider settings" });
@@ -3181,7 +3196,10 @@ router.get(
       });
     } catch (error) {
       logger.error("[Dashboard] Failed to fetch stats:", error);
-      throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch dashboard stats");
+      throw createError(
+        ERROR_CODES.INTERNAL_ERROR,
+        "Failed to fetch dashboard stats",
+      );
     }
   },
 );
@@ -3251,7 +3269,10 @@ router.get(
       });
     } catch (error) {
       logger.error("[Queue] Stats fetch failed:", error);
-      throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch queue stats");
+      throw createError(
+        ERROR_CODES.INTERNAL_ERROR,
+        "Failed to fetch queue stats",
+      );
     }
   },
 );

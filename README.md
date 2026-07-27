@@ -20,16 +20,62 @@ This platform connects mobile money wallets to the Stellar blockchain, allowing 
 
 The sender and recipient interact with their familiar mobile money apps. Stellar handles the cross-border settlement invisibly.
 
-```
-  📱 MTN MoMo (Cameroon)                           📱 Airtel Money (Kenya)
-         │                                                  ▲
-         ▼                                                  │
-  ┌─────────────────────────────────────────────────────────────────┐
-  │                    Mobile Money ↔ Stellar Bridge                │
-  │                                                                 │
-  │   Deposit (XAF → USDC)  ──►  Stellar Network  ──►  Withdraw    │
-  │                              (settles in ~5s)                   │
-  └─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Source["📱 Source Mobile Money"]
+        MTN["MTN MoMo<br/>Cameroon"]
+        AirtelSrc["Airtel Money<br/>Nigeria"]
+        OrangeSrc["Orange Money<br/>Senegal"]
+    end
+
+    subgraph Bridge["🌉 Mobile Money ↔ Stellar Bridge"]
+        API["REST / GraphQL API"]
+        MM["Mobile Money Service<br/>(debit / credit)"]
+        Ledger["Double-Entry Ledger"]
+        Fee["Dynamic Fee Engine"]
+        Queue["BullMQ Job Queue<br/>+ Redis"]
+        Vault["Vault System"]
+    end
+
+    subgraph Stellar["💫 Stellar Network"]
+        Horizon["Horizon API"]
+        Assets["Assets<br/>XLM · USDC · Custom"]
+        Soroban["Soroban Smart Contracts<br/>Escrow · HTLC"]
+    end
+
+    subgraph Dest["📱 Destination Mobile Money"]
+        AirtelDst["Airtel Money<br/>Kenya"]
+        Mpesa["M-Pesa<br/>Kenya"]
+        OrangeDst["Orange Money<br/>Madagascar"]
+    end
+
+    MTN -->|"1. Deposit XAF"| API
+    AirtelSrc -->|"1. Deposit NGN"| API
+    OrangeSrc -->|"1. Deposit XOF"| API
+
+    API -->|"2. Validate / Auth"| MM
+    MM -->|"3. Debit wallet"| MTN
+    MM -->|"3. Debit wallet"| AirtelSrc
+    MM -->|"3. Debit wallet"| OrangeSrc
+    MM -->|"4. Record tx"| Ledger
+    Ledger -->|"5. Apply fees"| Fee
+    Ledger -->|"6. Secure funds"| Vault
+
+    Ledger -->|"7. Mint / swap tokens"| Queue
+    Queue -->|"8. Submit tx (~5s)"| Horizon
+    Horizon -->|"9. Issue assets"| Assets
+    Horizon <-->|"10. Escrow/HTLC"| Soroban
+
+    Assets -->|"11. Burn / lock tokens"| Queue
+    Queue -->|"12. Credit payout"| MM
+    MM -->|"13. Credit wallet"| AirtelDst
+    MM -->|"13. Credit wallet"| Mpesa
+    MM -->|"13. Credit wallet"| OrangeDst
+
+    style Bridge fill:#e0f2fe,stroke:#0369a1,stroke-width:2px
+    style Stellar fill:#ede9fe,stroke:#7c3aed,stroke-width:2px
+    style Source fill:#fef3c7,stroke:#d97706,stroke-width:2px
+    style Dest fill:#dcfce7,stroke:#16a34a,stroke-width:2px
 ```
 
 ### Use Cases
@@ -43,6 +89,7 @@ The sender and recipient interact with their familiar mobile money apps. Stellar
 ## 🚀 Key Features
 
 ### Core Platform
+
 - **Mobile Money Integration** — MTN MoMo, Airtel Money, Orange Money with circuit breaker, failover, and batch payouts
 - **Stellar Blockchain** — XLM, USDC, and custom asset support via Stellar SDK + Horizon API
 - **Dual API** — REST (40+ endpoints) and GraphQL (queries, mutations, and real-time subscriptions)
@@ -51,6 +98,7 @@ The sender and recipient interact with their familiar mobile money apps. Stellar
 - **Provider Mock Server** — Full mock for MTN + Airtel APIs for local development without real credentials
 
 ### Security & Compliance
+
 - **Multi-tier KYC** — Tiered identity verification with document upload (S3) and third-party verification (Entrust)
 - **AML Monitoring** — Auto-flagging of suspicious patterns (large transactions, rapid structuring, daily totals)
 - **Travel Rule Compliance** — FATF travel rule data collection for qualifying transactions
@@ -62,6 +110,7 @@ The sender and recipient interact with their familiar mobile money apps. Stellar
 - **PII Encryption** — AES-256-GCM encryption for sensitive data at rest
 
 ### Financial Engine
+
 - **Dynamic Fee Engine** — Configurable fee strategies with VIP tiers (25KB+ fee strategy engine)
 - **Transaction Limits** — Provider-specific and KYC-tiered daily limits
 - **Vault System** — Secure fund storage with distributed locking
@@ -71,6 +120,7 @@ The sender and recipient interact with their familiar mobile money apps. Stellar
 - **Reconciliation** — Provider reconciliation workflows
 
 ### Stellar Protocol (SEP) Support
+
 - **SEP-06** — Deposit and Withdrawal API
 - **SEP-10** — Web Authentication (challenge-response)
 - **SEP-12** — KYC API (customer CRUD with document upload)
@@ -78,10 +128,12 @@ The sender and recipient interact with their familiar mobile money apps. Stellar
 - **SEP-31** — Cross-Border Payments (send-side anchor)
 
 ### Smart Contracts
+
 - **Escrow Contract** — Soroban smart contract for escrowed payments (Rust)
 - **HTLC Contract** — Hash Time-Locked Contract for atomic cross-chain swaps (Rust)
 
 ### Notifications
+
 - **Email** — SendGrid integration
 - **SMS** — Twilio integration
 - **Push Notifications** — Firebase Cloud Messaging
@@ -89,6 +141,7 @@ The sender and recipient interact with their familiar mobile money apps. Stellar
 - **PagerDuty** — Operational alerting
 
 ### Developer Tools
+
 - **CLI** (`momo-cli`) — Admin tool for auth, status checks, and transaction retries
 - **Kotlin SDK** — Auto-generated from OpenAPI spec
 - **Postman Collections** — Pre-built API collections for testing
@@ -156,16 +209,19 @@ npm run seed  # Optional: development data
 ### 4. Run
 
 **Development (with provider mocks):**
+
 ```bash
 npm run docker:dev   # Starts app + Postgres + Redis + provider mock server
 ```
 
 **Development (standalone):**
+
 ```bash
 npm run dev
 ```
 
 **Production:**
+
 ```bash
 npm run build
 npm start
@@ -185,6 +241,7 @@ npm run test:mutation       # Mutation testing (Stryker)
 ```
 
 **Test infrastructure includes:**
+
 - Unit & integration tests across controllers, services, middleware, routes
 - Pact consumer-driven contract tests for provider APIs
 - Playwright end-to-end tests
@@ -199,6 +256,7 @@ npm run test:mutation       # Mutation testing (Stryker)
 ### Interactive Docs (Development Only)
 
 Start the dev server and visit:
+
 - **Swagger UI**: `http://localhost:3000/docs`
 - **OpenAPI JSON**: `http://localhost:3000/docs/openapi.json`
 
@@ -280,11 +338,9 @@ query {
 
 # Create a deposit
 mutation {
-  createDeposit(input: {
-    amount: "10000"
-    phoneNumber: "+237670000000"
-    provider: MTN
-  }) {
+  createDeposit(
+    input: { amount: "10000", phoneNumber: "+237670000000", provider: MTN }
+  ) {
     id
     status
   }
@@ -303,11 +359,13 @@ subscription {
 ### Authentication
 
 Most endpoints require JWT:
+
 ```bash
 Authorization: Bearer <token>
 ```
 
 Admin operations use API key:
+
 ```bash
 X-API-Key: <key>
 ```
@@ -316,30 +374,31 @@ X-API-Key: <key>
 
 ### Transaction Limits
 
-| Type | Limit | Purpose |
-|------|-------|---------|
-| Minimum | 100 XAF | Prevent spam |
+| Type    | Limit         | Purpose          |
+| ------- | ------------- | ---------------- |
+| Minimum | 100 XAF       | Prevent spam     |
 | Maximum | 1,000,000 XAF | Fraud prevention |
 
 ### KYC-Based Daily Limits
 
-| Level | Daily Limit | Requirements |
-|-------|-------------|--------------|
-| Unverified | 10,000 XAF | Email only |
-| Basic | 100,000 XAF | ID + selfie |
-| Full | 1,000,000 XAF | Proof of address + video |
+| Level      | Daily Limit   | Requirements             |
+| ---------- | ------------- | ------------------------ |
+| Unverified | 10,000 XAF    | Email only               |
+| Basic      | 100,000 XAF   | ID + selfie              |
+| Full       | 1,000,000 XAF | Proof of address + video |
 
 ### Provider Limits
 
-| Provider | Min | Max |
-|----------|-----|-----|
-| MTN | 100 XAF | 500,000 XAF |
-| Airtel | 100 XAF | 1,000,000 XAF |
-| Orange | 500 XAF | 750,000 XAF |
+| Provider | Min     | Max           |
+| -------- | ------- | ------------- |
+| MTN      | 100 XAF | 500,000 XAF   |
+| Airtel   | 100 XAF | 1,000,000 XAF |
+| Orange   | 500 XAF | 750,000 XAF   |
 
 ### AML Monitoring
 
 Auto-flagging of suspicious transactions:
+
 - Single transaction > 1,000,000 XAF
 - 24h total > 5,000,000 XAF
 - Rapid structuring (3+ mixed in 15 min)
@@ -347,21 +406,235 @@ Auto-flagging of suspicious transactions:
 
 ## 🏗️ Architecture
 
+### Data Flow Overview
+
+This diagram maps the end-to-end data movement across mobile money providers, the bridge service, and the Stellar network for both deposit and withdrawal flows.
+
+```mermaid
+flowchart TB
+    subgraph UserLayer["👤 User Layer"]
+        Sender["Sender<br/>(Mobile Money App)"]
+        Recipient["Recipient<br/>(Mobile Money App)"]
+    end
+
+    subgraph ProviderLayer["📡 Mobile Money Providers"]
+        direction LR
+        MTN["MTN MoMo API"]
+        Airtel["Airtel Money API"]
+        Orange["Orange Money API"]
+    end
+
+    subgraph BridgeLayer["🌉 Bridge Service Layer"]
+        direction TB
+        subgraph APISub["API Gateway"]
+            REST["REST API<br/>(40+ endpoints)"]
+            GraphQL["GraphQL API<br/>(queries + subscriptions)"]
+            WS["WebSocket<br/>(live updates)"]
+        end
+
+        subgraph MiddlewareSub["Middleware Pipeline"]
+            Auth["Auth (JWT / 2FA)"]
+            RBAC["RBAC (Casbin)"]
+            RateLimit["Rate Limiting"]
+            AML["AML / Sanctions Check"]
+            Audit["Audit Logging"]
+        end
+
+        subgraph ServicesSub["Core Services"]
+            TxService["Transaction Service"]
+            MMSvc["Mobile Money Service<br/>(circuit breaker + failover)"]
+            StellarSvc["Stellar Service<br/>(SDK + Horizon)"]
+            FeeSvc["Fee Engine<br/>(VIP tiers + strategies)"]
+            LedgerSvc["Double-Entry Ledger"]
+            VaultSvc["Vault / Liquidity Mgmt"]
+        end
+
+        subgraph DataSub["Data & Processing"]
+            PG[("PostgreSQL 16<br/>+ read replicas")]
+            RD[("Redis 7<br/>cache / pub/sub")]
+            BQ["BullMQ Queues<br/>+ Workers"]
+        end
+
+        subgraph ComplianceSub["Compliance & Security"]
+            KYC["Multi-tier KYC<br/>(Entrust + S3)"]
+            Travel["FATF Travel Rule"]
+            Dispute["Dispute Mgmt<br/>(State Machine)"]
+        end
+    end
+
+    subgraph StellarLayer["💫 Stellar Network Layer"]
+        direction LR
+        Horizon["Horizon API<br/>(testnet / mainnet)"]
+        Assets["Assets<br/>XLM · USDC · Custom"]
+        Soroban["Soroban Smart Contracts<br/>Escrow · HTLC · Swap Router"]
+        StellarCore["Stellar Core Nodes<br/>(consensus ~5s)"]
+    end
+
+    %% ======== DEPOSIT FLOW (Mobile Money → Stellar) ========
+    Sender -->|"D1. Initiate deposit<br/>via USSD / App"| MTN
+    Sender -->|"D1. Initiate deposit"| Airtel
+    Sender -->|"D1. Initiate deposit"| Orange
+
+    MTN -->|"D2. Callback / Poll"| REST
+    Airtel -->|"D2. Callback / Poll"| REST
+    Orange -->|"D2. Callback / Poll"| REST
+
+    REST -->|"D3. Route request"| Auth
+    Auth -->|"D4. Verify identity"| KYC
+    Auth --> RBAC
+    RBAC --> RateLimit
+    RateLimit --> AML
+    AML -->|"D5. Screen sanctions"| PG
+    AML --> Audit
+
+    Audit -->|"D6. Create transaction"| TxService
+    TxService -->|"D7. Debit wallet (async)"| BQ
+    BQ -->|"D8. Provider request"| MMSvc
+    MMSvc -->|"D9. requestPayment()"| MTN
+    MMSvc -->|"D9. requestPayment()"| Airtel
+    MMSvc -->|"D9. requestPayment()"| Orange
+
+    MTN -->|"D10. Debit success"| MMSvc
+    Airtel -->|"D10. Debit success"| MMSvc
+    Orange -->|"D10. Debit success"| MMSvc
+
+    MMSvc -->|"D11. Confirm debit"| TxService
+    TxService -->|"D12. Apply fee"| FeeSvc
+    TxService -->|"D13. Ledger entries"| LedgerSvc
+    LedgerSvc -->|"D14. Journal → DB"| PG
+    LedgerSvc -->|"D15. Lock funds"| VaultSvc
+    VaultSvc --> PG
+
+    TxService -->|"D16. Enqueue mint"| BQ
+    BQ -->|"D17. Worker: build tx"| StellarSvc
+    StellarSvc -->|"D18. Build + sign tx"| Horizon
+    Horizon -->|"D19. Submit to network"| StellarCore
+    StellarCore -->|"D20. Consensus ✔︎"| Horizon
+    Horizon -->|"D21. Credit assets"| Assets
+    StellarSvc <-->|"D22. Escrow if needed"| Soroban
+
+    StellarSvc -->|"D23. Update status"| TxService
+    TxService -->|"D24. Notify via WS/SMS/Email"| WS
+    TxService --> PG
+    WS --> Sender
+
+    %% ======== WITHDRAWAL FLOW (Stellar → Mobile Money) ========
+    Recipient -->|"W1. Receive notification"| WS
+
+    Sender -->|"W2. Initiate withdraw<br/>from Stellar"| GraphQL
+    GraphQL --> Auth
+    Auth -->|"W3. 2FA required"| RBAC
+    RBAC --> RateLimit
+    RateLimit --> AML
+    AML --> Audit
+
+    Audit -->|"W4. Create withdraw tx"| TxService
+    TxService -->|"W5. Check KYC tier"| KYC
+    KYC --> PG
+
+    TxService -->|"W6. Enqueue burn"| BQ
+    BQ -->|"W7. Worker: burn/lock"| StellarSvc
+    StellarSvc -->|"W8. Submit burn tx"| Horizon
+    Horizon --> StellarCore
+    StellarCore -->|"W9. Burn / lock assets"| Assets
+    StellarSvc -->|"W10. Escrow release"| Soroban
+
+    StellarSvc -->|"W11. Confirm on-chain"| TxService
+    TxService -->|"W12. Ledger entries"| LedgerSvc
+    LedgerSvc -->|"W13. Unlock funds"| VaultSvc
+    LedgerSvc --> PG
+
+    TxService -->|"W14. Enqueue payout"| BQ
+    BQ -->|"W15. Worker: payout"| MMSvc
+    MMSvc -->|"W16. sendPayout()"| MTN
+    MMSvc -->|"W16. sendPayout()"| Airtel
+    MMSvc -->|"W16. sendPayout()"| Orange
+
+    MTN -->|"W17. Credit wallet"| Recipient
+    Airtel -->|"W17. Credit wallet"| Recipient
+    Orange -->|"W17. Credit wallet"| Recipient
+
+    MTN -->|"W18. Payout confirm"| MMSvc
+    Airtel -->|"W18. Payout confirm"| MMSvc
+    Orange -->|"W18. Payout confirm"| MMSvc
+
+    MMSvc -->|"W19. Reconcile"| TxService
+    TxService --> PG
+    TxService -->|"W20. Notify recipient"| WS
+
+    %% Styling
+    style UserLayer fill:#fff7ed,stroke:#c2410c,stroke-width:2px
+    style ProviderLayer fill:#fef3c7,stroke:#d97706,stroke-width:2px
+    style BridgeLayer fill:#e0f2fe,stroke:#0369a1,stroke-width:2px
+    style StellarLayer fill:#ede9fe,stroke:#7c3aed,stroke-width:2px
+
+    style APISub fill:#dbeafe,stroke:#2563eb,stroke-width:1px
+    style MiddlewareSub fill:#fce7f3,stroke:#be185d,stroke-width:1px
+    style ServicesSub fill:#d1fae5,stroke:#047857,stroke-width:1px
+    style DataSub fill:#f3e8ff,stroke:#6d28d9,stroke-width:1px
+    style ComplianceSub fill:#fee2e2,stroke:#b91c1c,stroke-width:1px
+```
+
+### Deposit → Withdrawal End-to-End Sequence
+
+```mermaid
+sequenceDiagram
+    actor Sender
+    participant MM as Mobile Money Provider
+    participant API as Bridge API
+    participant MMsvc as Mobile Money Svc
+    participant Ledger as Ledger Service
+    participant Queue as BullMQ Worker
+    participant Stellar as Stellar Service
+    participant HZN as Horizon / Stellar
+
+    Note over Sender,HZN: 📥 DEPOSIT: Mobile Money → Stellar
+    Sender->>MM: 1. Initiate deposit (USSD/App)
+    MM-->>API: 2. Callback / webhook
+    API->>API: 3. Auth + AML + Sanctions
+    API->>MMsvc: 4. requestPayment(debit)
+    MMsvc->>MM: 5. Debit sender wallet
+    MM-->>MMsvc: 6. Debit confirmed
+    MMsvc->>Ledger: 7. Record + apply fees
+    Ledger->>Ledger: 8. Vault lock + journal entries
+    Ledger->>Queue: 9. Enqueue token mint job
+    Queue->>Stellar: 10. Build + sign Stellar tx
+    Stellar->>HZN: 11. Submit (payment / changeTrust)
+    HZN-->>Stellar: 12. ✅ On-chain (~5s)
+    Stellar->>API: 13. Update tx status → completed
+    API-->>Sender: 14. WebSocket + SMS + Email
+
+    Note over Sender,HZN: 📤 WITHDRAWAL: Stellar → Mobile Money
+    Sender->>API: 15. POST /transactions/withdraw
+    API->>API: 16. JWT + 2FA + KYC tier check
+    API->>Queue: 17. Enqueue burn + payout jobs
+    Queue->>Stellar: 18. Burn / escrow tokens
+    Stellar->>HZN: 19. Submit burn tx
+    HZN-->>Stellar: 20. ✅ Burn confirmed
+    Stellar->>Ledger: 21. Unlock vault funds
+    Ledger->>Queue: 22. Enqueue payout job
+    Queue->>MMsvc: 23. sendPayout(credit)
+    MMsvc->>MM: 24. Credit recipient wallet
+    MM-->>MMsvc: 25. Payout confirmed
+    MMsvc->>API: 26. Reconcile + status
+    API-->>Sender: 27. Notify recipient + sender
+```
+
 ### Tech Stack
 
-| Layer | Technology |
-|-------|------------|
-| **API Server** | Node.js, TypeScript, Express, Apollo Server (GraphQL) |
-| **Database** | PostgreSQL 16 (primary + read replicas), Redis 7 (cache, sessions, pub/sub) |
-| **Blockchain** | Stellar SDK, Horizon API, Soroban smart contracts (Rust) |
-| **Job Processing** | BullMQ workers, node-cron scheduled jobs |
+| Layer                        | Technology                                                                       |
+| ---------------------------- | -------------------------------------------------------------------------------- |
+| **API Server**               | Node.js, TypeScript, Express, Apollo Server (GraphQL)                            |
+| **Database**                 | PostgreSQL 16 (primary + read replicas), Redis 7 (cache, sessions, pub/sub)      |
+| **Blockchain**               | Stellar SDK, Horizon API, Soroban smart contracts (Rust)                         |
+| **Job Processing**           | BullMQ workers, node-cron scheduled jobs                                         |
 | **Ingest (High-throughput)** | Go service (fasthttp) + Node.js service (Fastify), Redis Streams, NATS JetStream |
-| **Security** | Helmet, bcrypt, JWT, Speakeasy (TOTP), Casbin (RBAC), AES-256-GCM (PII) |
-| **Monitoring** | Prometheus, Datadog (dd-trace), Sentry, PagerDuty |
-| **Logging** | Structured JSON → Loki/Grafana (primary), ELK stack (secondary) |
-| **Edge** | Cloudflare Workers (`.well-known` caching) |
-| **Infrastructure** | Docker, Kubernetes (+ Helm, KEDA), Terraform (AWS) |
-| **CI/CD** | GitHub Actions (lint, test, build, deploy, rollback) |
+| **Security**                 | Helmet, bcrypt, JWT, Speakeasy (TOTP), Casbin (RBAC), AES-256-GCM (PII)          |
+| **Monitoring**               | Prometheus, Datadog (dd-trace), Sentry, PagerDuty                                |
+| **Logging**                  | Structured JSON → Loki/Grafana (primary), ELK stack (secondary)                  |
+| **Edge**                     | Cloudflare Workers (`.well-known` caching)                                       |
+| **Infrastructure**           | Docker, Kubernetes (+ Helm, KEDA), Terraform (AWS)                               |
+| **CI/CD**                    | GitHub Actions (lint, test, build, deploy, rollback)                             |
 
 ### Project Structure
 
@@ -433,6 +706,7 @@ HTTP method-based routing: `GET`/`HEAD`/`OPTIONS` → read replicas (round-robin
 ### Metrics
 
 Prometheus metrics at `/metrics`:
+
 - Transaction counts by status and provider
 - API response times (histograms)
 - Queue depths and job latencies
@@ -450,6 +724,7 @@ curl http://localhost:3000/health/lb  # Load balancer
 ### Logging
 
 Dual logging stack:
+
 - **Primary**: Structured JSON → Loki → Grafana (included in docker-compose)
 - **Secondary**: Filebeat → Logstash → Elasticsearch → Kibana (ELK stack configs in `elk/`)
 
@@ -477,6 +752,7 @@ The production Dockerfile uses a multi-stage build targeting < 200MB image size 
 ### Kubernetes
 
 Pre-built manifests in `k8s/` include:
+
 - **Deployment** — 3 replicas, rolling updates, startup/liveness/readiness probes, resource limits
 - **Worker Deployment** — Separate BullMQ worker pods
 - **KEDA Autoscaling** — Scale workers based on queue depth (threshold: 20 jobs, 1–20 replicas)
@@ -491,6 +767,7 @@ kubectl apply -f k8s/
 ### Terraform (AWS)
 
 Full AWS infrastructure in `terraform/`:
+
 - VPC with public/private subnets across multiple AZs
 - ECS Fargate for containerized deployment
 - RDS PostgreSQL with Multi-AZ (production)
@@ -508,6 +785,7 @@ terraform apply
 ### CI/CD
 
 GitHub Actions pipeline (`.github/workflows/ci.yml`):
+
 1. **Security** — npm audit, Snyk vulnerability scanning
 2. **Test** — Lint, Jest (with Postgres + Redis services), Playwright E2E, Codecov upload
 3. **Build** — TypeScript compilation
@@ -521,23 +799,27 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed error codes and soluti
 ### Common Issues
 
 **Database connection fails:**
+
 ```bash
 pg_isready -h localhost -p 5432
 # Verify DATABASE_URL format
 ```
 
 **Redis connection fails:**
+
 ```bash
 redis-cli ping  # Should return PONG
 ```
 
 **Stellar transactions fail:**
+
 ```bash
 echo $STELLAR_NETWORK  # Should be 'testnet' or 'mainnet'
 curl https://horizon-testnet.stellar.org
 ```
 
 **Provider mock not working:**
+
 ```bash
 # Use docker-compose.dev.yml which includes the mock server
 docker compose -f docker-compose.dev.yml up
@@ -546,6 +828,7 @@ docker compose -f docker-compose.dev.yml up
 ## 🚨 Error Handling
 
 Standardized error codes organized by category:
+
 - **4000-4099**: Validation (HTTP 400)
 - **4010-4019**: Authentication (HTTP 401)
 - **4030-4039**: Authorization (HTTP 403)

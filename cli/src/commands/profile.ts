@@ -8,6 +8,7 @@ import {
   getConfig,
 } from "../config";
 import { printError } from "../dashboard";
+import { formatSuccess, formatWarn } from "../utils/cliFormatting";
 
 export function registerProfileCommand(program: Command): void {
   const profile = program
@@ -23,7 +24,9 @@ export function registerProfileCommand(program: Command): void {
       try {
         saveProfile(name, options.url, options.key);
         console.log(
-          `${chalk.green("✓")} Profile ${chalk.bold(`"${name}"`)} saved successfully`,
+          formatSuccess(
+            `Profile ${chalk.bold(`"${name}"`)} saved successfully`,
+          ),
         );
       } catch (err) {
         printError(
@@ -42,7 +45,7 @@ export function registerProfileCommand(program: Command): void {
       try {
         const profile = useProfile(name);
         console.log(
-          `${chalk.green("✓")} Switched to profile ${chalk.bold(`"${name}"`)} `,
+          formatSuccess(`Switched to profile ${chalk.bold(`"${name}"`)} `),
         );
         console.log(`  ${chalk.gray("URL:")} ${chalk.cyan(profile.apiUrl)}`);
         console.log(
@@ -83,12 +86,12 @@ export function registerProfileCommand(program: Command): void {
           try {
             const config = getConfig();
             console.log(
-              `\n${chalk.green("✓")} Currently using environment variables`,
+              `\n${formatSuccess("Currently using environment variables")}`,
             );
             console.log(`  ${chalk.gray("URL:")} ${chalk.cyan(config.apiUrl)}`);
           } catch {
             process.stderr.write(
-              `${chalk.yellow("⚠")} No active profile or environment variables set\n`,
+              `${formatWarn("No active profile or environment variables set")}\n`,
             );
           }
         }
@@ -109,7 +112,9 @@ export function registerProfileCommand(program: Command): void {
       try {
         deleteProfile(name);
         console.log(
-          `${chalk.green("✓")} Profile ${chalk.bold(`"${name}"`)} deleted successfully`,
+          formatSuccess(
+            `Profile ${chalk.bold(`"${name}"`)} deleted successfully`,
+          ),
         );
       } catch (err) {
         printError(

@@ -4,6 +4,7 @@ import { checkAuth } from "../api";
 import { getConfig } from "../config";
 import { trackEvent } from "../telemetry";
 import { printError } from "../dashboard";
+import { formatSuccess } from "../utils/cliFormatting";
 
 export function registerAuthCommand(program: Command): void {
   const auth = program.command("auth").description("Authentication commands");
@@ -22,7 +23,7 @@ export function registerAuthCommand(program: Command): void {
           durationMs: Date.now() - start,
         });
         console.log(
-          `${chalk.green("✓")} API key valid — connected to ${chalk.cyan(apiUrl)}`,
+          formatSuccess(`API key valid — connected to ${chalk.cyan(apiUrl)}`),
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

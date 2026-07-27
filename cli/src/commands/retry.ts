@@ -2,6 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { getTransaction, retryTransaction } from "../api";
 import { printError } from "../dashboard";
+import { formatSuccess, formatWarn } from "../utils/cliFormatting";
 
 export function registerRetryCommand(program: Command): void {
   program
@@ -13,14 +14,16 @@ export function registerRetryCommand(program: Command): void {
 
         if (tx.status === "pending" || tx.status === "completed") {
           process.stderr.write(
-            `${chalk.yellow("⚠")} Transaction ${chalk.bold(transactionId)} is already ${chalk.cyan(tx.status)} — no action taken.\n`,
+            `${formatWarn(`Transaction ${chalk.bold(transactionId)} is already ${chalk.cyan(tx.status)} — no action taken.`)}\n`,
           );
           process.exit(0);
         }
 
         await retryTransaction(transactionId);
         console.log(
-          `${chalk.green("✓")} Transaction ${chalk.bold(transactionId)} reset to ${chalk.cyan("pending")} — worker will pick it up shortly.`,
+          formatSuccess(
+            `Transaction ${chalk.bold(transactionId)} reset to ${chalk.cyan("pending")} — worker will pick it up shortly.`,
+          ),
         );
       } catch (err) {
         printError(

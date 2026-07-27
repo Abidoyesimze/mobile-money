@@ -17,7 +17,8 @@ export type AMLRule =
   | "daily_total_threshold"
   | "rapid_structuring"
   | "sanction_match"
-  | "dynamic_profile_score";
+  | "dynamic_profile_score"
+  | "threshold_structuring";
 
 export interface AMLTransactionLocation {
   lat: number;
@@ -84,6 +85,8 @@ export interface AMLConfig {
   rapidWindowMinutes: number;
   rapidTransactionCount: number;
   structuringFloorXaf: number;
+  structuringThresholdRatio: number;
+  structuringFrequencyLimit: number;
   alertBufferSize: number;
   profileScoreThreshold: number;
   velocityHourlyCap: number;
@@ -138,13 +141,23 @@ const defaultConfig: AMLConfig = {
   rapidWindowMinutes: Number(process.env.AML_RAPID_WINDOW_MINUTES || 15),
   rapidTransactionCount: Number(process.env.AML_RAPID_TRANSACTION_COUNT || 3),
   structuringFloorXaf: Number(process.env.AML_STRUCTURING_FLOOR_XAF || 100_000),
+  structuringThresholdRatio: Number(
+    process.env.AML_STRUCTURING_THRESHOLD_RATIO || 0.8,
+  ),
+  structuringFrequencyLimit: Number(
+    process.env.AML_STRUCTURING_FREQUENCY_LIMIT || 3,
+  ),
   alertBufferSize: Number(process.env.AML_ALERT_BUFFER_SIZE || 5000),
   profileScoreThreshold: Number(process.env.AML_PROFILE_SCORE_THRESHOLD || 50),
   velocityHourlyCap: Number(process.env.AML_VELOCITY_HOURLY_CAP || 5),
   velocityDailyCap: Number(process.env.AML_VELOCITY_DAILY_CAP || 15),
-  movingAverageWindowDays: Number(process.env.AML_MOVING_AVERAGE_WINDOW_DAYS || 30),
+  movingAverageWindowDays: Number(
+    process.env.AML_MOVING_AVERAGE_WINDOW_DAYS || 30,
+  ),
   amountMultiplierLimit: Number(process.env.AML_AMOUNT_MULTIPLIER_LIMIT || 3),
-  frequencySpikeMultiplier: Number(process.env.AML_FREQUENCY_SPIKE_MULTIPLIER || 3),
+  frequencySpikeMultiplier: Number(
+    process.env.AML_FREQUENCY_SPIKE_MULTIPLIER || 3,
+  ),
   geoHopMaxKm: Number(process.env.AML_GEO_HOP_MAX_KM || 250),
   geoHopMaxHours: Number(process.env.AML_GEO_HOP_MAX_HOURS || 6),
 };
@@ -360,7 +373,9 @@ export class AMLService {
     }
 
     const currentLocation = normalizeLocationMetadata(current.locationMetadata);
-    const lastLocation = normalizeLocationMetadata(snapshot.lastLocationMetadata);
+    const lastLocation = normalizeLocationMetadata(
+      snapshot.lastLocationMetadata,
+    );
     if (currentLocation && lastLocation && snapshot.lastLocationAt) {
       geographicHopDistanceKm = getDistanceKm(lastLocation, currentLocation);
       geographicHopHours =
@@ -500,6 +515,32 @@ export class AMLService {
       });
     }
 
+    // Scan user transaction frequency patterns for structuring just below KYC threshold
+    const structuringLowerBound =
+      this.config.singleTransactionThresholdXaf *
+      this.config.structuringThresholdRatio;
+    const structuringTxsJustBelowThreshold = windowTxs.filter(
+      (tx) =>
+        tx.amount >= structuringLowerBound &&
+        tx.amount < this.config.singleTransactionThresholdXaf,
+    );
+
+    const isCurrentStructuring =
+      current.amount >= structuringLowerBound &&
+      current.amount < this.config.singleTransactionThresholdXaf;
+
+    const totalStructuringCount =
+      structuringTxsJustBelowThreshold.length + (isCurrentStructuring ? 1 : 0);
+
+    if (totalStructuringCount >= this.config.structuringFrequencyLimit) {
+      ruleHits.push({
+        rule: "threshold_structuring",
+        message: `Structuring attempt detected: user submitted ${totalStructuringCount} transaction requests just below KYC threshold (${this.config.singleTransactionThresholdXaf} XAF)`,
+        observed: totalStructuringCount,
+        threshold: this.config.structuringFrequencyLimit,
+      });
+    }
+
     if (ruleHits.length === 0) {
       return {
         flagged: false,
@@ -514,7 +555,8 @@ export class AMLService {
     const severity: AMLAlertSeverity = ruleHits.some(
       (hit) =>
         hit.rule === "single_transaction_threshold" ||
-        hit.rule === "daily_total_threshold",
+        hit.rule === "daily_total_threshold" ||
+        hit.rule === "threshold_structuring",
     )
       ? "high"
       : "medium";
@@ -657,6 +699,7 @@ export class AMLService {
       rapid_structuring: 0,
       sanction_match: 0,
       dynamic_profile_score: 0,
+      threshold_structuring: 0,
     };
 
     const dailyMap = new Map<string, number>();
@@ -690,6 +733,26 @@ export class AMLService {
       const model = new AMLAlertModel();
       await model.create(alert);
 
+      // Send alert notifications to administrators
+      try {
+        const { notificationRouter } = await import("./notificationRouter.js");
+        await notificationRouter.routeSystemNotification(
+          alert.severity === "high" ? "high" : "medium",
+          "compliance_aml_alert",
+          `Suspicious Transaction Alert: User ${alert.userId}`,
+          `Compliance alert triggered for user ${alert.userId}: ${alert.reasons.join("; ")}`,
+          {
+            alertId: alert.id,
+            userId: alert.userId,
+            transactionId: alert.transactionId,
+            ruleHits: alert.ruleHits,
+            severity: alert.severity,
+          },
+        );
+      } catch (notifyErr) {
+        logger.error("Failed to send administrator alert notification:", notifyErr);
+      }
+
       if (alert.severity === "high") {
         console.log(
           `[SAR AUTO-PREPARE] High severity alert ${alert.id} detected. Preparing SAR...`,
@@ -697,10 +760,16 @@ export class AMLService {
         try {
           const { generateSAR } = require("../compliance/sar");
           generateSAR(alert.userId, alert.id).catch((err: any) => {
-            logger.error(`[SAR AUTO-PREPARE ERROR] Failed for alert ${alert.id}:`, err);
+            logger.error(
+              `[SAR AUTO-PREPARE ERROR] Failed for alert ${alert.id}:`,
+              err,
+            );
           });
         } catch (err) {
-          logger.error(`[SAR AUTO-PREPARE ERROR] Failed to load sar service:`, err);
+          logger.error(
+            `[SAR AUTO-PREPARE ERROR] Failed to load sar service:`,
+            err,
+          );
         }
       }
     } catch (error) {

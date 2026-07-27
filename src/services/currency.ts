@@ -1,7 +1,9 @@
 import logger from "../utils/logger";
 import axios from "axios";
-import { exchangeRateBufferService, BufferedRate } from "./exchangeRateBufferService";
-
+import {
+  exchangeRateBufferService,
+  BufferedRate,
+} from "./exchangeRateBufferService";
 
 // ---------------------------------------------------------------------------
 // Supported currencies
@@ -16,6 +18,8 @@ export const SUPPORTED_CURRENCIES = [
   "TZS",
   "ZMW",
   "RWF",
+  "GNF",
+  "MGA",
 ] as const;
 
 export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
@@ -72,6 +76,8 @@ const FALLBACK_RATES: ExchangeRates = {
   TZS: 2600, // Tanzanian Shilling
   ZMW: 27, // Zambian Kwacha
   RWF: 1320, // Rwandan Franc
+  GNF: 8500, // Guinean Franc
+  MGA: 4500, // Malagasy Ariary
 };
 
 // ---------------------------------------------------------------------------
@@ -207,9 +213,14 @@ export class CurrencyService {
     provider: string,
     direction: "sell" | "buy" = "sell",
   ): Promise<ConversionResult & { buffer: BufferedRate }> {
-    return this.convertWithBuffer(amount, currency, BASE_CURRENCY, provider, direction);
+    return this.convertWithBuffer(
+      amount,
+      currency,
+      BASE_CURRENCY,
+      provider,
+      direction,
+    );
   }
-
 
   /** Return snapshot of cache state for health checks. */
   getStatus(): CurrencyServiceStatus {

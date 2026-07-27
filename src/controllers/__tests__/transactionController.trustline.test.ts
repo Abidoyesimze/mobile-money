@@ -54,7 +54,12 @@ jest.mock("../../models/transaction", () => {
       countByStatuses: jest.fn().mockResolvedValue(0),
       findByStatuses: jest.fn().mockResolvedValue([]),
     })),
-    TransactionStatus: { Pending: "pending", Failed: "failed", Completed: "completed", Cancelled: "cancelled" },
+    TransactionStatus: {
+      Pending: "pending",
+      Failed: "failed",
+      Completed: "completed",
+      Cancelled: "cancelled",
+    },
   };
 });
 
@@ -88,7 +93,9 @@ jest.mock("../../utils/phoneUtils", () => ({
 
 jest.mock("../../utils/lock", () => ({
   lockManager: {
-    withLock: jest.fn().mockImplementation((_key: string, fn: () => unknown) => fn()),
+    withLock: jest
+      .fn()
+      .mockImplementation((_key: string, fn: () => unknown) => fn()),
   },
   LockKeys: {
     phoneNumber: (p: string) => `phone:${p}`,
@@ -134,7 +141,7 @@ jest.mock("../../services/mobilemoney/mobileMoneyService", () => ({
 
 // ── Import after mocks ────────────────────────────────────────────────────────
 
-import { withdrawHandler } from "../transactionController";
+import { withdrawHandler, depositHandler } from "../transactionController";
 import {
   checkDestinationTrustline,
   TrustlineError,
@@ -166,7 +173,11 @@ function makeReq(overrides: Partial<Request["body"]> = {}): Partial<Request> {
   } as unknown as Partial<Request>;
 }
 
-function makeRes(): { res: Partial<Response>; status: jest.Mock; json: jest.Mock } {
+function makeRes(): {
+  res: Partial<Response>;
+  status: jest.Mock;
+  json: jest.Mock;
+} {
   const json = jest.fn();
   const status = jest.fn().mockReturnValue({ json });
   const res = { status, json } as unknown as Partial<Response>;
@@ -249,7 +260,10 @@ describe("withdrawHandler — trustline check", () => {
       withdrawHandler(req as Request, res as Response),
     ).resolves.toBeUndefined();
 
-    expect(mockCheckTrustline).toHaveBeenCalledWith(VALID_STELLAR_ADDRESS, USDC);
+    expect(mockCheckTrustline).toHaveBeenCalledWith(
+      VALID_STELLAR_ADDRESS,
+      USDC,
+    );
     expect(status).toHaveBeenCalledWith(200);
     expect(json).toHaveBeenCalledWith(
       expect.objectContaining({ transactionId: "tx-1", jobId: "job-1" }),
@@ -257,7 +271,6 @@ describe("withdrawHandler — trustline check", () => {
   });
 
   it("does NOT call checkDestinationTrustline for deposit requests", async () => {
-    const { depositHandler } = await import("../transactionController");
 
     const req = makeReq();
     const { res, status } = makeRes();

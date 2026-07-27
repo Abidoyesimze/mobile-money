@@ -1,6 +1,13 @@
 import chalk from "chalk";
 import Table from "cli-table3";
 import figlet from "figlet";
+import {
+  formatError as formatErrorMessage,
+  formatInfo as formatInfoMessage,
+  formatSuccess as formatSuccessMessage,
+  formatWarn as formatWarnMessage,
+  normalizeErrorCode,
+} from "./utils/cliFormatting";
 
 export interface SystemHealth {
   database: "healthy" | "degraded" | "unhealthy";
@@ -323,10 +330,8 @@ export function printError(
   error?: Error,
   code?: string,
 ): void {
-  const label = code ? chalk.red.bold(`[${code}] `) : "";
-  process.stderr.write(
-    `\n${chalk.red("✗")} ${chalk.red.bold("Error:")} ${label}${chalk.red(message)}\n`,
-  );
+  const normalizedCode = normalizeErrorCode(code);
+  process.stderr.write(`\n${formatErrorMessage(message, normalizedCode)}\n`);
   if (error?.message && error.message !== message) {
     process.stderr.write(
       `  ${chalk.gray("Details:")} ${chalk.gray(error.message)}\n`,
@@ -339,19 +344,19 @@ export function printError(
  * Print success message
  */
 export function printSuccess(message: string): void {
-  console.log(chalk.green(`\n✓ ${message}\n`));
+  console.log(`\n${formatSuccessMessage(message)}\n`);
 }
 
 /**
  * Print info message
  */
 export function printInfo(message: string): void {
-  console.log(chalk.cyan(`ℹ ${message}\n`));
+  console.log(`${formatInfoMessage(message)}\n`);
 }
 
 /**
  * Print a warning message to stderr.
  */
 export function printWarn(message: string): void {
-  process.stderr.write(`${chalk.yellow("⚠")} ${chalk.yellow(message)}\n`);
+  process.stderr.write(`${formatWarnMessage(message)}\n`);
 }

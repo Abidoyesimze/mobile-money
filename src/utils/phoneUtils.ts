@@ -1,6 +1,9 @@
-import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js";
+import {
+  parsePhoneNumberFromString,
+  type CountryCode,
+} from "libphonenumber-js";
 
-export type MobileProvider = "mtn" | "airtel" | "orange";
+export type MobileProvider = "mtn" | "airtel" | "orange" | "vodacom" | "tigo";
 type PhoneOutputFormat = "e164" | "national";
 
 interface ProviderPhoneFormatConfig {
@@ -16,9 +19,36 @@ const PROVIDER_PREFIXES: Record<MobileProvider, string[]> = {
   mtn: ["23767", "23768", "25677", "25678", "23324", "23354", "23355", "23359"],
   airtel: ["23766", "25670", "25675", "23326", "23356", "23357"],
   orange: ["23765", "23769", "22507", "22177"],
+  vodacom: [
+    "255740",
+    "255762",
+    "255763",
+    "255764",
+    "255765",
+    "255766",
+    "255767",
+    "255768",
+    "255769",
+  ],
+  tigo: [
+    "255713",
+    "255714",
+    "255715",
+    "255716",
+    "255717",
+    "255718",
+    "255719",
+    "255752",
+    "255753",
+    "255754",
+    "255755",
+  ],
 };
 
-const PROVIDER_PHONE_FORMATS: Record<MobileProvider, ProviderPhoneFormatConfig> = {
+const PROVIDER_PHONE_FORMATS: Record<
+  MobileProvider,
+  ProviderPhoneFormatConfig
+> = {
   mtn: {
     defaultRegion: "CM",
     output: "e164",
@@ -29,6 +59,14 @@ const PROVIDER_PHONE_FORMATS: Record<MobileProvider, ProviderPhoneFormatConfig> 
   },
   orange: {
     defaultRegion: "CM",
+    output: "e164",
+  },
+  vodacom: {
+    defaultRegion: "TZ",
+    output: "e164",
+  },
+  tigo: {
+    defaultRegion: "TZ",
     output: "e164",
   },
 };

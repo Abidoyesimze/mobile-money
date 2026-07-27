@@ -22,13 +22,12 @@ import { runDailyProviderReconciliation } from "./providerReconciliationJob";
 import { runReconciliationJob } from "./reconciliationJob";
 import { runDatabaseBackupJob } from "./databaseBackupJob";
 import { runDatabaseBackupVerifyJob } from "./databaseBackupVerifyJob";
-import {
-  INDEX_REINDEX_CRON,
-  INDEX_REINDEX_JOB_ENABLED,
-} from "../config/env";
+import { INDEX_REINDEX_CRON, INDEX_REINDEX_JOB_ENABLED } from "../config/env";
 import { runIndexReindexJob } from "./indexReindexJob";
 import { runSanctionSyncJob } from "./sanctionSyncJob";
+import { runJwtKeyRotationJob } from "./jwtKeyRotationJob";
 import { startNotificationWorker } from "../workers/notificationWorker";
+import { runTravelRuleExportJob } from "../services/compliance/travelRuleExport";
 
 interface JobConfig {
   name: string;
@@ -108,6 +107,8 @@ const JOBS: JobConfig[] = [
     // Daily at 01:00 AM UTC — sweeps merchant fees and settles provider balances
     schedule: process.env.DAILY_SETTLEMENT_CRON || "0 1 * * *",
     handler: runDailySettlementJob,
+  },
+  {
     name: "provider-reconciliation",
     // Daily at 4:00 AM - runs automated reconciliation against provider CSV reports
     schedule: process.env.PROVIDER_RECONCILIATION_CRON || "0 4 * * *",
@@ -118,6 +119,16 @@ const JOBS: JobConfig[] = [
     // 1st of every month at midnight
     schedule: "0 0 1 * *",
     handler: runMonthlyInvoiceJob,
+  },
+  {
+    name: "monthly-reconciliation-report",
+    // 1st of every month at midnight
+    schedule: "0 0 1 * *",
+    handler: async () => {
+      const { runMonthlyReconciliationReportJob } =
+        await import("./monthlyReconciliationReportJob.js");
+      return runMonthlyReconciliationReportJob();
+    },
   },
   ...(INDEX_REINDEX_JOB_ENABLED
     ? [
@@ -157,10 +168,23 @@ const JOBS: JobConfig[] = [
     handler: runDatabaseBackupVerifyJob,
   },
   {
+    name: "jwt-key-rotation",
+    // Monthly on the 1st at 3:00 AM — rotates JWT signing key,
+    // old keys remain valid for 24-hour grace period
+    schedule: process.env.JWT_KEY_ROTATION_CRON || "0 3 1 * *",
+    handler: runJwtKeyRotationJob,
+  },
+  {
     name: "sanction-sync",
     // Daily at 1:00 AM - streams and indexes sanctions list updates, clears match cache
     schedule: process.env.SANCTION_SYNC_CRON || "0 1 * * *",
     handler: runSanctionSyncJob,
+  },
+  {
+    name: "travel-rule-export",
+    // Hourly - exports pending Travel Rule compliance records to regulatory reporting endpoints
+    schedule: process.env.TRAVEL_RULE_EXPORT_CRON || "0 * * * *",
+    handler: runTravelRuleExportJob,
   },
 ];
 
