@@ -420,6 +420,28 @@ export const configSchema = convict({
     },
   },
 
+  // SMS Failover Settings
+  sms: {
+    primaryProvider: {
+      doc: "Primary SMS provider (e.g. twilio, africastalking, infobip)",
+      format: String,
+      default: "twilio",
+      env: "SMS_PROVIDER",
+    },
+    secondaryProvider: {
+      doc: "Secondary/fallback SMS provider",
+      format: String,
+      default: "africastalking",
+      env: "SMS_PROVIDER_SECONDARY",
+    },
+    timeoutMs: {
+      doc: "Timeout in milliseconds before failing over to secondary provider",
+      format: "nat",
+      default: 5000,
+      env: "SMS_TIMEOUT_MS",
+    },
+  },
+
   // Response compression
   compression: {
     enabled: {

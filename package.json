@@ -80,6 +80,7 @@
     "@apollo/client": "^4.2.1",
     "@asteasolutions/zod-to-openapi": "8.5.0",
     "@aws-sdk/client-s3": "^3.1017.0",
+    "@aws-sdk/client-secrets-manager": "^3.1095.0",
     "@aws-sdk/lib-storage": "^3.1017.0",
     "@bull-board/api": "^6.20.6",
     "@bull-board/express": "^6.20.6",
