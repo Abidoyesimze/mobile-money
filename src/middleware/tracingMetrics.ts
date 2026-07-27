@@ -23,28 +23,34 @@ import { getTraceIds } from "../tracer";
 // ─── Metrics ──────────────────────────────────────────────────────────────────
 
 function buildMetrics(reg: Registry = defaultRegister) {
-  const httpRequestsTotal = new Counter({
-    name: "http_requests_red_total",
-    help: "RED: total HTTP requests",
-    labelNames: ["method", "route", "status_code"],
-    registers: [reg],
-  });
+  const httpRequestsTotal =
+    (reg.getSingleMetric("http_requests_red_total") as Counter<string>) ||
+    new Counter({
+      name: "http_requests_red_total",
+      help: "RED: total HTTP requests",
+      labelNames: ["method", "route", "status_code"],
+      registers: [reg],
+    });
 
-  const httpRequestErrorsTotal = new Counter({
-    name: "http_request_errors_red_total",
-    help: "RED: total HTTP error responses (4xx+5xx)",
-    labelNames: ["method", "route", "status_code"],
-    registers: [reg],
-  });
+  const httpRequestErrorsTotal =
+    (reg.getSingleMetric("http_request_errors_red_total") as Counter<string>) ||
+    new Counter({
+      name: "http_request_errors_red_total",
+      help: "RED: total HTTP error responses (4xx+5xx)",
+      labelNames: ["method", "route", "status_code"],
+      registers: [reg],
+    });
 
-  const httpRequestDuration = new Histogram({
-    name: "http_request_duration_red_seconds",
-    help: "RED: HTTP request duration with exemplars",
-    labelNames: ["method", "route", "status_code"],
-    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
-    enableExemplars: true,
-    registers: [reg],
-  });
+  const httpRequestDuration =
+    (reg.getSingleMetric("http_request_duration_red_seconds") as Histogram<string>) ||
+    new Histogram({
+      name: "http_request_duration_red_seconds",
+      help: "RED: HTTP request duration with exemplars",
+      labelNames: ["method", "route", "status_code"],
+      buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+      enableExemplars: false,
+      registers: [reg],
+    });
 
   return { httpRequestsTotal, httpRequestErrorsTotal, httpRequestDuration };
 }

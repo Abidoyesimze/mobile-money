@@ -158,6 +158,20 @@ export const configSchema = convict({
         env: "ORANGE_MADAGASCAR_CALLBACK_SIGNATURE_HEADER",
       },
     },
+    orangeGuinea: {
+      minAmount: {
+        doc: "Minimum transaction amount for Orange Guinea (GNF)",
+        format: "nat",
+        default: 100,
+        env: "ORANGE_GUINEA_MIN_AMOUNT",
+      },
+      maxAmount: {
+        doc: "Maximum transaction amount for Orange Guinea (GNF)",
+        format: "nat",
+        default: 5000000,
+        env: "ORANGE_GUINEA_MAX_AMOUNT",
+      },
+    },
     smsPortal: {
       minAmount: {
         doc: "Minimum transaction amount for SMS Portal (various currencies)",

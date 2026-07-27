@@ -254,7 +254,8 @@ export const getTransactionHistoryHandler = async (
         hasMore,
       },
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error.code) throw error;
     logger.error("History Fetch Error:", error);
     throw createError(
       ERROR_CODES.INTERNAL_ERROR,
