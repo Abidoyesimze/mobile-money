@@ -83,6 +83,12 @@ export function generateOpenAPIDocument(): Record<string, unknown> {
         description:
           "SEP-30 Multi-Sig Key Recovery — M-of-N cryptographic recovery sessions with full audit trail",
       },
+      { name: "Health", description: "Server health and uptime checks" },
+      { name: "Disputes", description: "Transaction dispute management" },
+      { name: "Webhooks", description: "Outbound webhook event delivery" },
+      { name: "Admin", description: "Administrative endpoints" },
+      { name: "Compliance", description: "Regulatory compliance checks" },
+      { name: "GraphQL", description: "GraphQL API endpoints" },
     ],
   }) as unknown as Record<string, unknown>;
 }

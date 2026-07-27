@@ -218,3 +218,58 @@ document.getElementById("tab-btn-toml").addEventListener("click", () => selectTa
 document.getElementById("tab-btn-kyc").addEventListener("click", () => selectTab("kyc"));
 document.getElementById("tab-btn-stats").addEventListener("click", () => selectTab("stats"));
 document.getElementById("btn-copy-code").addEventListener("click", copyCode);
+
+// SLA Dashboard
+function formatDelay(seconds) {
+  if (seconds === null || seconds === undefined) return "—";
+  if (seconds < 1) return `${Math.round(seconds * 1000)} ms`;
+  return `${seconds.toFixed(2)} s`;
+}
+
+async function loadSlaMetrics() {
+  const fields = ["sla-total", "sla-compliance", "sla-avg", "sla-p95", "sla-minmax", "sla-breached"];
+  fields.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = "Loading…";
+  });
+
+  try {
+    const res = await fetch("/api/admin/monitoring/sla");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.success || !data.metrics) throw new Error("Unexpected response");
+
+    const m = data.metrics;
+    document.getElementById("sla-total").textContent = m.total_deposits.toLocaleString();
+    document.getElementById("sla-compliance").textContent =
+      `${m.sla_compliance_rate.toFixed(1)}%`;
+    document.getElementById("sla-avg").textContent = formatDelay(m.avg_delay_seconds);
+    document.getElementById("sla-p95").textContent = formatDelay(m.p95_delay_seconds);
+    document.getElementById("sla-minmax").textContent =
+      `${formatDelay(m.min_delay_seconds)} / ${formatDelay(m.max_delay_seconds)}`;
+    document.getElementById("sla-breached").textContent = m.sla_breached.toLocaleString();
+
+    const breachCard = document.getElementById("sla-breach-card");
+    if (breachCard) {
+      breachCard.classList.toggle("sla-card-danger", m.sla_breached > 0);
+      breachCard.classList.toggle("sla-card-alert", m.sla_breached === 0);
+    }
+
+    const updatedAt = document.getElementById("sla-updated-at");
+    if (updatedAt) updatedAt.textContent = new Date().toLocaleTimeString();
+  } catch (err) {
+    fields.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = "—";
+    });
+    const updatedAt = document.getElementById("sla-updated-at");
+    if (updatedAt) updatedAt.textContent = "unavailable";
+  }
+}
+
+// Load on page start and refresh every 60 seconds
+loadSlaMetrics();
+setInterval(loadSlaMetrics, 60000);
+
+const btnRefreshSla = document.getElementById("btn-refresh-sla");
+if (btnRefreshSla) btnRefreshSla.addEventListener("click", loadSlaMetrics);

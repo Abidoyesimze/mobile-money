@@ -239,10 +239,53 @@ async function setupSentinelSwitchMasterListener(): Promise<void> {
   console.warn("Redis Sentinel: unable to attach +switch-master subscriber");
 }
 
+async function handleClusterRedirection(host: string, port: number): Promise<void> {
+  if (failoverInFlight) return;
+  failoverInFlight = true;
+  try {
+    const nextUrl = buildRedisUrl(host, port);
+    if (nextUrl === activeRedisUrl) return;
+
+    const previousUrl = activeRedisUrl;
+    activeRedisUrl = nextUrl;
+    (redisClient as any).options.url = nextUrl;
+
+    console.warn(`Redis Cluster: Redirection detected. Re-configuring client to new master: ${nextUrl} (from ${previousUrl})`);
+
+    if (redisClient.isOpen) {
+      try {
+        await redisClient.disconnect();
+      } catch (err) {
+        logger.error("Redis Cluster: Error disconnecting from previous master", err);
+      }
+      try {
+        await redisClient.connect();
+        console.log(`Redis Cluster: Successfully reconnected to new master: ${nextUrl}`);
+      } catch (err) {
+        logger.error("Redis Cluster: Failed to connect to new master", err);
+      }
+    }
+  } finally {
+    failoverInFlight = false;
+  }
+}
+
 redisClient.on("error", (err) => {
   logger.error("Redis Client Error:", err);
   if (SENTINEL_ENABLED && /READONLY/i.test(String(err?.message || ""))) {
     void forceFailoverReconnect("redis:readonly");
+  }
+
+  // Handle Redis Cluster Redirection Errors (MOVED / ASK)
+  const errStr = String(err?.message || "");
+  if (/MOVED|ASK/i.test(errStr)) {
+    console.warn(`Redis Cluster: Failover warning detected in logs: ${errStr}`);
+    const match = errStr.match(/(?:MOVED|ASK)\s+\d+\s+([^\s:]+):(\d+)/i);
+    if (match) {
+      const [_, host, portStr] = match;
+      const port = parseInt(portStr, 10);
+      void handleClusterRedirection(host, port);
+    }
   }
 });
 

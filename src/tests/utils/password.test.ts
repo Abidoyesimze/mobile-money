@@ -5,12 +5,13 @@ import { registerSchema } from "../../routes/auth";
 const makePass = (parts: string[]) => parts.join("");
 
 describe("Password utils", () => {
-  it("should hash a password and compare correctly", async () => {
+  it("should hash a password with minimum 12 rounds and compare correctly", async () => {
     const password = makePass(["Test", "123", "!"]);
     const hash = await hashPassword(password);
 
     expect(typeof hash).toBe("string");
     expect(hash).not.toBe(password);
+    expect(hash).toMatch(/^\$2[aby]\$12\$/);
 
     const valid = await comparePassword(password, hash);
     expect(valid).toBe(true);

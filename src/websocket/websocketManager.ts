@@ -97,6 +97,17 @@ export class WebSocketManager {
         return;
       }
 
+      // Optional: enforce allowed origins (set ALLOWED_ORIGINS env var)
+      const origin = req.headers["origin"];
+      const allowedOrigins = process.env.ALLOWED_ORIGINS;
+      if (allowedOrigins && origin) {
+        const origins = allowedOrigins.split(",").map((o) => o.trim());
+        if (!origins.includes(origin)) {
+          client.close(1008, "Origin not allowed");
+          return;
+        }
+      }
+
       try {
         const decoded = verifyToken(token) as unknown as Record<
           string,
@@ -162,6 +173,15 @@ export class WebSocketManager {
     client: AuthenticatedWebSocket,
     rawData: string,
   ): Promise<void> {
+    // Reject messages larger than 100KB to prevent memory exhaustion
+    if (rawData.length > 102_400) {
+      this.sendToClient(client, {
+        type: "error",
+        data: { message: "Message too large" },
+      });
+      return;
+    }
+
     let message: WebSocketMessage;
 
     try {
@@ -374,11 +394,12 @@ export class WebSocketManager {
     // Accept token via ?token= query param or Authorization: Bearer header
     const url = new URL(req.url ?? "/", "ws://localhost");
     const queryToken = url.searchParams.get("token");
-    if (queryToken) return queryToken;
+    if (queryToken && queryToken.trim().length > 0) return queryToken.trim();
 
     const authHeader = req.headers["authorization"] ?? "";
     const match = authHeader.match(/^Bearer\s+(.+)$/i);
-    return match ? match[1] : null;
+    const token = match ? match[1].trim() : null;
+    return token && token.length > 0 ? token : null;
   }
 
   private handleDisconnect(
