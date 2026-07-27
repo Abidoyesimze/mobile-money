@@ -120,6 +120,7 @@ function isTransientDatabaseError(error: unknown): boolean {
     code === "ETIMEDOUT" ||
     code === "57P01" ||
     code === "08006" ||
+    code === "40P01" ||
     message.includes("connection terminated") ||
     message.includes("terminated unexpectedly") ||
     message.includes("connection lost") ||
@@ -598,6 +599,7 @@ function startReplicaLagMonitor(): void {
 }
 
 startReplicaLagMonitor();
+startDeadlockDetector(pool);
 
 /**
  * Execute a read-only SQL query against a replica pool if available.
