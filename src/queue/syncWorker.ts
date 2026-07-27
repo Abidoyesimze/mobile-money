@@ -416,23 +416,49 @@ async function processNatsSyncMessage(
     );
     // natsManager.consume acks on success; nothing extra needed here
   } catch (error: unknown) {
+    span.setTag("error", error);
     const isTransient =
       error instanceof RateLimitError || error instanceof NetworkError;
     const message = error instanceof Error ? error.message : String(error);
+    const latencyMs = Date.now() - startedAt;
 
     if (isTransient) {
       // Re-throw so natsManager.consume issues a nak and JetStream redelivers
-      console.warn(
-        `[SyncWorker] [NATS] Transient error for ${platform} sync (transactionId=${transactionId}): ${message}. Will nak for redelivery.`,
+      logger.warn(
+        {
+          ...logFields,
+          queueName: SYNC_QUEUE_NAME,
+          queueSource: "nats",
+          latencyMs,
+          syncId,
+          transactionId,
+          platform,
+          error: message,
+          isTransient: true,
+        },
+        "[SyncWorker] [NATS] Transient error during accounting sync - will nak for redelivery",
       );
       throw error;
     } else {
       // Permanent error — term to avoid infinite redelivery loop
-      console.error(
-        `[SyncWorker] [NATS] Permanent error for ${platform} sync (transactionId=${transactionId}): ${message}. Terminating message.`,
+      logger.error(
+        {
+          ...logFields,
+          queueName: SYNC_QUEUE_NAME,
+          queueSource: "nats",
+          latencyMs,
+          syncId,
+          transactionId,
+          platform,
+          error: message,
+          isPermanent: true,
+        },
+        "[SyncWorker] [NATS] Permanent error during accounting sync - terminating message",
       );
       msg.term();
     }
+  } finally {
+    finishSyncSpan(span, startedAt, spanStatus);
   }
 }
 
