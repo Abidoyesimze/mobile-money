@@ -21,6 +21,7 @@ import type { TransactionJobData } from "../queue/transactionQueue";
 import { amlService } from "../services/aml";
 import { generateFlaggedTransactionComplianceReport } from "../services/complianceReportService";
 import { twoFactorWithdrawalService } from "../services/twoFactorWithdrawalService";
+import { totpService } from "../services/auth/totp";
 import {
   CancelTransactionResponse,
   LimitExceededErrorResponse,
@@ -94,6 +95,7 @@ export const transactionSchema = z.object({
     .optional(),
   // Optional 2FA fields for withdrawals
   twoFactorToken: z.string().optional(),
+  totpCode: z.string().optional(),
   backupCode: z.string().optional(),
 });
 
@@ -636,12 +638,15 @@ async function processTransactionRequest(
         await twoFactorWithdrawalService.requires2FAForWithdrawal(userId);
       if (requires2FA) {
         const twoFactorToken =
-          req.body.twoFactorToken || (req.headers["x-2fa-token"] as string);
+          req.body.totpCode ||
+          req.body.twoFactorToken ||
+          (req.headers["x-totp-code"] as string) ||
+          (req.headers["x-2fa-token"] as string);
         const backupCode = req.body.backupCode;
 
         if (!twoFactorToken && !backupCode) {
           throw createError(
-            ERROR_CODES.INVALID_CREDENTIALS,
+            ERROR_CODES.INVALID_INPUT,
             "This account requires 2FA verification for all withdrawals. Please provide a TOTP token or backup code.",
             {
               code: "TWO_FACTOR_REQUIRED",
@@ -659,7 +664,7 @@ async function processTransactionRequest(
 
         if (!verificationResult.success) {
           throw createError(
-            ERROR_CODES.UNAUTHORIZED,
+            ERROR_CODES.INVALID_INPUT,
             verificationResult.error || "Invalid 2FA token or backup code",
             {
               error: "2FA verification failed",

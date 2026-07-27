@@ -1,4 +1,5 @@
-import logger from "../utils/logger";
+import logger, { getTelecomAverageMetrics } from "../utils/logger";
+
 import { Router, Request, Response, NextFunction } from "express";
 import * as StellarSdk from "stellar-sdk";
 import { generateToken } from "../auth/jwt";
@@ -263,6 +264,34 @@ router.get(
     }
   },
 );
+
+// GET /api/admin/metrics/telecom-latency
+router.get(
+  "/metrics/telecom-latency",
+  requireAdmin,
+  logAdminAction("GET_TELECOM_LATENCY_METRICS"),
+  async (req: Request, res: Response) => {
+    try {
+      const provider = req.query.provider as string | undefined;
+      const metrics = getTelecomAverageMetrics(provider);
+      res.json({
+        success: true,
+        timestamp: new Date().toISOString(),
+        data: metrics,
+      });
+    } catch (err) {
+      logger.error("Error fetching telecom latency metrics:", err);
+      throw createError(
+        ERROR_CODES.INTERNAL_ERROR,
+        "Failed to retrieve telecom latency metrics",
+        {
+          message: err instanceof Error ? err.message : "Unknown error",
+        },
+      );
+    }
+  },
+);
+
 
 // POST /api/admin/users/bulk/freeze
 router.post(

@@ -61,10 +61,10 @@ pub struct EscrowState {
 
 impl EscrowState {
     /// Compute (fee_amount, net_beneficiary_amount).
-    pub fn split(&self) -> (i128, i128) {
-        let fee = self.amount * self.fee_bps as i128 / 10_000;
-        let net = self.amount - fee;
-        (fee, net)
+    pub fn split(&self) -> Option<(i128, i128)> {
+        let fee = self.amount.checked_mul(self.fee_bps as i128)?.checked_div(10_000)?;
+        let net = self.amount.checked_sub(fee)?;
+        Some((fee, net))
     }
 }
 
@@ -99,6 +99,7 @@ impl EscrowContract {
         depositor.require_auth();
 
         assert!(amount > 0, "amount must be positive");
+        assert!(amount <= i128::MAX / 10_000, "amount is too large to prevent fee overflow");
 
         assert!(
             !env.storage().instance().has(&ESCROW),
@@ -176,7 +177,7 @@ impl EscrowContract {
 
         let tc = token::Client::new(&env, &state.token);
         let contract_addr = env.current_contract_address();
-        let (fee, net) = state.split();
+        let (fee, net) = state.split().ok_or(EscrowError::InvalidAmount)?;
 
         if fee > 0 {
             tc.transfer(&contract_addr, &state.fee_recipient, &fee);

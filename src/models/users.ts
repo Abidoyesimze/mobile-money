@@ -82,8 +82,64 @@ export class UserModel {
     };
   }
 
+  async create(data: {
+    phoneNumber: string;
+    kycLevel?: string;
+    email?: string;
+    firstName?: string;
+    lastName?: string;
+    address?: string;
+    dateOfBirth?: string;
+    idNumber?: string;
+    status?: "active" | "frozen" | "suspended";
+  }): Promise<User> {
+    const encryptedPhone = encryptField(data.phoneNumber) || encrypt(data.phoneNumber);
+    const encryptedEmail = data.email ? (encryptField(data.email) || encrypt(data.email)) : null;
+    const encryptedFirstName = data.firstName ? encryptField(data.firstName) : null;
+    const encryptedLastName = data.lastName ? encryptField(data.lastName) : null;
+    const encryptedAddress = data.address ? encryptField(data.address) : null;
+    const encryptedDOB = data.dateOfBirth ? encryptField(data.dateOfBirth) : null;
+    const encryptedIdNum = data.idNumber ? encryptField(data.idNumber) : null;
+
+    const result = await queryWrite(
+      `INSERT INTO users (
+        phone_number, kyc_level, email, first_name, last_name, address, date_of_birth, id_number, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING *`,
+      [
+        encryptedPhone,
+        data.kycLevel || "basic",
+        encryptedEmail,
+        encryptedFirstName,
+        encryptedLastName,
+        encryptedAddress,
+        encryptedDOB,
+        encryptedIdNum,
+        data.status || "active",
+      ],
+    );
+
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      phoneNumber: (decryptField(row.phone_number) || decrypt(row.phone_number)) as string,
+      kycLevel: row.kyc_level,
+      preferredLanguage: row.preferred_language ?? row.language ?? undefined,
+      email: row.email ? ((decryptField(row.email) || decrypt(row.email)) as string) : undefined,
+      status: row.status,
+      tokenVersion: row.token_version ?? 0,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      firstName: row.first_name ? (decryptField(row.first_name) as string) : undefined,
+      lastName: row.last_name ? (decryptField(row.last_name) as string) : undefined,
+      address: row.address ? (decryptField(row.address) as string) : undefined,
+      dateOfBirth: row.date_of_birth ? (decryptField(row.date_of_birth) as string) : undefined,
+      idNumber: row.id_number ? (decryptField(row.id_number) as string) : undefined,
+    };
+  }
+
   async updateEmail(id: string, email: string): Promise<void> {
-    const encryptedEmail = encrypt(email);
+    const encryptedEmail = encryptField(email) || encrypt(email);
     await queryWrite("UPDATE users SET email = $1 WHERE id = $2", [
       encryptedEmail,
       id,
