@@ -51,7 +51,8 @@ export function deriveKey(
  * Isolates breach impact — compromising one user's key doesn't affect others.
  */
 export function deriveUserKey(userId: string): Buffer {
-  return deriveKey(env.DB_ENCRYPTION_KEY, `pii-user-${userId}`);
+  const masterKey = process.env.DB_ENCRYPTION_KEY || env.DB_ENCRYPTION_KEY;
+  return deriveKey(masterKey, `pii-user-${userId}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -152,11 +153,23 @@ export function getEncryptionKeys(): Map<string, string> {
   const keys = new Map<string, string>();
 
   // 1. Default/legacy key
-  if (env.DB_ENCRYPTION_KEY) {
-    keys.set("legacy", env.DB_ENCRYPTION_KEY);
+  const currentKey = process.env.DB_ENCRYPTION_KEY || env.DB_ENCRYPTION_KEY;
+  if (currentKey) {
+    keys.set("legacy", currentKey);
   }
 
-  // 2. Parse DB_ENCRYPTION_KEYS JSON if configured
+  // 2. Fallback keys (DB_ENCRYPTION_KEYS_FALLBACK)
+  if (process.env.DB_ENCRYPTION_KEYS_FALLBACK) {
+    const fallbacks = process.env.DB_ENCRYPTION_KEYS_FALLBACK.split(",");
+    fallbacks.forEach((fb, idx) => {
+      const trimmed = fb.trim();
+      if (trimmed) {
+        keys.set(`fallback_${idx}`, trimmed);
+      }
+    });
+  }
+
+  // 3. Parse DB_ENCRYPTION_KEYS JSON if configured
   if (process.env.DB_ENCRYPTION_KEYS) {
     try {
       const parsed = JSON.parse(process.env.DB_ENCRYPTION_KEYS);
@@ -168,9 +181,14 @@ export function getEncryptionKeys(): Map<string, string> {
     }
   }
 
-  // 3. Scan process.env for DB_ENCRYPTION_KEY_XXX
+  // 4. Scan process.env for DB_ENCRYPTION_KEY_XXX
   for (const [key, val] of Object.entries(process.env)) {
-    if (key.startsWith("DB_ENCRYPTION_KEY_") && val) {
+    if (
+      key.startsWith("DB_ENCRYPTION_KEY_") &&
+      val &&
+      key !== "DB_ENCRYPTION_KEY_VERSION" &&
+      key !== "DB_ENCRYPTION_KEYS_FALLBACK"
+    ) {
       const version = key.replace("DB_ENCRYPTION_KEY_", "").toLowerCase();
       keys.set(version, val);
     }
@@ -223,42 +241,40 @@ export function decryptField(
   if (raw == null || raw === "") return raw;
 
   const parts = raw.split(":");
-  const keys = getEncryptionKeys();
+  const keysMap = getEncryptionKeys();
 
   // A versioned payload has format: version:iv:authTag:ciphertext (parts.length >= 4)
-  if (parts.length >= 4 && keys.has(parts[0].toLowerCase())) {
+  if (parts.length >= 4 && keysMap.has(parts[0].toLowerCase())) {
     const version = parts[0].toLowerCase();
-    const keyMaterial = keys.get(version)!;
+    const keyMaterial = keysMap.get(version)!;
     const key = deriveKey(keyMaterial);
     try {
       const payload = deserializePayload(parts.slice(1).join(":"));
       return decryptAES(payload, key);
     } catch (err) {
       console.warn(
-        `[Encryption] Decryption failed for versioned payload '${version}'. Returning raw value. Error: ${
+        `[Encryption] Decryption failed for versioned payload '${version}'. Error: ${
           err instanceof Error ? err.message : err
         }`,
       );
-      return raw;
+      throw err;
     }
   }
 
-  // Fallback to legacy/default decryption
-  const keyMaterial = keys.get("legacy") || env.DB_ENCRYPTION_KEY;
-  const key = deriveKey(keyMaterial);
-  try {
-    return decryptAES(deserializePayload(raw), key);
-  } catch (err) {
-    // Only warn if it looks like it was meant to be an encrypted payload (has colons)
-    if (raw.includes(":")) {
-      console.warn(
-        `[Encryption] Decryption failed for legacy-format payload. Returning raw value. Error: ${
-          err instanceof Error ? err.message : err
-        }`,
-      );
+  // Fallback / multi-key trial decryption
+  const keys = Array.from(keysMap.values()).map((k) => deriveKey(k));
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      return decryptAES(deserializePayload(raw), keys[i]);
+    } catch (err) {
+      if (i === keys.length - 1) {
+        if (raw.includes(":")) {
+          throw err;
+        }
+      }
     }
-    return raw;
   }
+  return raw;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,7 +299,9 @@ export function decryptFieldForUser(
   if (raw == null || raw === "") return raw;
   const payload = deserializePayload(raw);
   const keysMap = getEncryptionKeys();
-  const keys = Array.from(keysMap.values()).map((k) => deriveKey(k));
+  const keys = Array.from(keysMap.values()).map((k) =>
+    deriveKey(k, `pii-user-${userId}`),
+  );
   for (let i = 0; i < keys.length; i++) {
     try {
       return decryptAES(payload, keys[i]);
@@ -312,7 +330,8 @@ export function encrypt(
   deterministic = false,
 ): string | null | undefined {
   if (text == null || text === "") return text;
-  const key = deriveKey(env.DB_ENCRYPTION_KEY);
+  const masterKey = process.env.DB_ENCRYPTION_KEY || env.DB_ENCRYPTION_KEY;
+  const key = deriveKey(masterKey);
   const iv = deterministic ? DETERMINISTIC_IV : crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv, {
     authTagLength: AUTH_TAG_LENGTH,

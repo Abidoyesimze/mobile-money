@@ -22,6 +22,8 @@ import {
   decryptField,
   encryptFieldForUser,
   decryptFieldForUser,
+  encrypt,
+  decrypt,
 } from "../utils/encryption";
 import {
   encryptPiiFields,
