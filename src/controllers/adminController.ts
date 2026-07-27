@@ -399,6 +399,26 @@ export const getSlaMetrics = async (_req: Request, res: Response): Promise<void>
   }
 };
 
+import { getTelecomAverageMetrics } from "../utils/logger";
+
+export const getTelecomLatencyMetricsController = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const provider = req.query.provider as string | undefined;
+    const metrics = getTelecomAverageMetrics(provider);
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      data: metrics,
+    });
+  } catch (error) {
+    winstonOutageLogger.error("Failed to fetch telecom latency metrics", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch telecom latency metrics");
+  }
+};
+
 /**
  * Express Router mounting all monitoring dashboard endpoints
  */
@@ -416,5 +436,7 @@ router.get("/logs", getOutageLogs);
 router.post("/circuit-breaker/reset", resetCircuitBreakerHandler);
 router.post("/circuit-breaker/trip", tripCircuitBreakerHandler);
 router.get("/sla", getSlaMetrics);
+router.get("/telecom-latency", getTelecomLatencyMetricsController);
 
 export default router;
+

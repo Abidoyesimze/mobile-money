@@ -48,11 +48,6 @@ function buildConfig(): ProviderAuthConfig & {
   };
 }
 
-// ─── Provider ─────────────────────────────────────────────────────────────────
-
-export class MTNProvider extends BaseProvider {
-  private readonly subscriptionKey: string;
-  private readonly environment: string;
 export interface BatchPayoutItem {
   referenceId: string;
   phoneNumber: string;
@@ -66,7 +61,9 @@ export interface BatchPayoutResult {
   providerReference?: string;
 }
 
-export class MTNProvider {
+export class MTNProvider extends BaseProvider {
+  private readonly subscriptionKey: string;
+  private readonly environment: string;
   private apiKey: string;
   private apiSecret: string;
   private subscriptionKey: string;

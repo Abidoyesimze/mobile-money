@@ -29,7 +29,7 @@ module.exports = {
     {
       displayName: "frontend",
       // No preset — plain JS, no TypeScript compilation needed
-      testEnvironment: "jsdom",
+      testEnvironment: "node",
       setupFiles: ["<rootDir>/tests/jest.setup.ts"],
       roots: ["<rootDir>/src/tests/frontend"],
       testMatch: [
