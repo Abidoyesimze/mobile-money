@@ -3,6 +3,7 @@ import { connection } from "./config";
 import { Request, Response } from "express";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { createError } from "../middleware/errorHandler";
+import logger from "../utils/logger";
 
 /**
  * Dead Letter Queue (DLQ) for transaction processing.
@@ -50,6 +51,46 @@ export async function capturePersistentFailure(job: Job) {
       `[DLQ] Job ${job.id} moved to Dead Letter Queue after ${job.attemptsMade} failed attempts.`,
     );
   }
+}
+
+const DLQ_RETENTION_DAYS = parseInt(
+  process.env.DLQ_RETENTION_DAYS || "90",
+  10,
+);
+
+/**
+ * Removes DLQ entries older than DLQ_RETENTION_DAYS (default 90 days).
+ * Safe to run repeatedly — jobs that have already been removed are skipped.
+ */
+export async function runDlqCleanupJob(): Promise<void> {
+  const cutoffMs = DLQ_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const cutoffTimestamp = Date.now() - cutoffMs;
+
+  const jobs = await deadLetterQueue.getJobs(["waiting"], 0, 9999);
+  const stale = jobs.filter((job) => job.timestamp < cutoffTimestamp);
+
+  if (stale.length === 0) {
+    logger.info("[dlq-cleanup] No stale DLQ entries to remove.");
+    return;
+  }
+
+  let removed = 0;
+  let failed = 0;
+
+  for (const job of stale) {
+    try {
+      await job.remove();
+      removed++;
+    } catch (err) {
+      failed++;
+      logger.warn(`[dlq-cleanup] Failed to remove DLQ entry ${job.id}:`, err);
+    }
+  }
+
+  logger.info(
+    `[dlq-cleanup] Cleaned ${removed} stale DLQ entries older than ${DLQ_RETENTION_DAYS} days` +
+      (failed > 0 ? ` (${failed} failed to remove)` : ""),
+  );
 }
 
 /**

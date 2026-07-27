@@ -28,6 +28,7 @@ import { runSanctionSyncJob } from "./sanctionSyncJob";
 import { runJwtKeyRotationJob } from "./jwtKeyRotationJob";
 import { startNotificationWorker } from "../workers/notificationWorker";
 import { runTravelRuleExportJob } from "../services/compliance/travelRuleExport";
+import { runDlqCleanupJob } from "../queue/dlq";
 
 interface JobConfig {
   name: string;
@@ -185,6 +186,12 @@ const JOBS: JobConfig[] = [
     // Hourly - exports pending Travel Rule compliance records to regulatory reporting endpoints
     schedule: process.env.TRAVEL_RULE_EXPORT_CRON || "0 * * * *",
     handler: runTravelRuleExportJob,
+  },
+  {
+    name: "dlq-cleanup",
+    // Daily at 3:30 AM — removes DLQ entries older than 90 days after overnight audit window
+    schedule: process.env.DLQ_CLEANUP_CRON || "30 3 * * *",
+    handler: runDlqCleanupJob,
   },
 ];
 

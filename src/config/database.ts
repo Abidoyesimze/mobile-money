@@ -16,6 +16,11 @@ const productionSsl =
 const SLOW_QUERY_THRESHOLD_MS = parseInt(
   process.env.SLOW_QUERY_THRESHOLD_MS || "1000",
 );
+// Queries exceeding this threshold suggest a missing or unused index and trigger
+// a higher-severity warning alongside the standard slow-query log entry.
+const SLOW_QUERY_INDEX_ALERT_THRESHOLD_MS = parseInt(
+  process.env.SLOW_QUERY_INDEX_ALERT_THRESHOLD_MS || "5000",
+);
 const ENABLE_SLOW_QUERY_LOGGING =
   process.env.ENABLE_SLOW_QUERY_LOGGING === "true" ||
   (process.env.NODE_ENV === "development" &&
@@ -188,21 +193,39 @@ function sanitizeParams(params: any[]): any[] {
 }
 
 /**
- * Logs slow queries with sanitized information
+ * Logs slow queries with sanitized information.
+ * Queries above SLOW_QUERY_INDEX_ALERT_THRESHOLD_MS also emit a warn-level
+ * entry flagging a possible missing index.
  */
 function logSlowQuery(query: string, duration: number, params?: any[]): void {
   if (!ENABLE_SLOW_QUERY_LOGGING) return;
 
+  const sanitized = sanitizeQuery(query);
+  const sanitizedParams = params ? sanitizeParams(params) : undefined;
+  const durationRounded = Math.round(duration);
+
   const logEntry = {
     type: "slow_query",
-    duration: Math.round(duration),
+    duration: durationRounded,
     threshold: SLOW_QUERY_THRESHOLD_MS,
-    query: sanitizeQuery(query),
-    params: params ? sanitizeParams(params) : undefined,
+    query: sanitized,
+    params: sanitizedParams,
     timestamp: new Date().toISOString(),
   };
 
   console.log(JSON.stringify(logEntry));
+
+  if (duration > SLOW_QUERY_INDEX_ALERT_THRESHOLD_MS) {
+    logger.warn("possible_missing_index", {
+      type: "possible_missing_index",
+      duration: durationRounded,
+      index_alert_threshold: SLOW_QUERY_INDEX_ALERT_THRESHOLD_MS,
+      hint: "Query exceeded index-alert threshold. Review EXPLAIN ANALYZE output and confirm a matching index exists.",
+      query: sanitized,
+      params: sanitizedParams,
+      timestamp: new Date().toISOString(),
+    });
+  }
 }
 
 // Enhanced Pool with query timing
