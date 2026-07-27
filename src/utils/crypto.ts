@@ -9,7 +9,7 @@ import {
   deriveUserKey,
   serializePayload,
   deserializePayload,
-  EncryptedPayload,
+  type EncryptedPayload,
 } from "./encryption";
 import { env } from "../config/env";
 
@@ -23,8 +23,8 @@ export {
   deriveUserKey,
   serializePayload,
   deserializePayload,
-  EncryptedPayload,
 };
+export type { EncryptedPayload };
 
 const ALGORITHM = "aes-256-gcm" as const;
 const IV_LENGTH = 12; // 96-bit IV recommended for AES-GCM
