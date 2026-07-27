@@ -18,6 +18,7 @@ import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { Resource } from "@opentelemetry/resources";
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import tracer from "dd-trace";
 import { CompositePropagator, W3CBaggagePropagator } from "@opentelemetry/core";
 import {
   TraceIdRatioBasedSampler,

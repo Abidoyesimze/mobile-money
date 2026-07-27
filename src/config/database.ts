@@ -36,6 +36,14 @@ const POOL_MAX_USES = parseInt(
   process.env.DB_POOL_MAX_USES || "0",
   10,
 );
+const QUERY_TIMEOUT_MS = parseInt(
+  process.env.DB_QUERY_TIMEOUT_MS || "10000",
+  10,
+);
+const STATEMENT_TIMEOUT_MS = parseInt(
+  process.env.DB_STATEMENT_TIMEOUT_MS || "10000",
+  10,
+);
 const POOL_ALLOW_EXIT_ON_IDLE =
   process.env.DB_POOL_ALLOW_EXIT_ON_IDLE === "true";
 const POOL_IDLE_TIMEOUT_MS = parseInt(
@@ -439,6 +447,8 @@ function getPoolOptions(overrides: Partial<{
   ssl: boolean | undefined;
   maxUses: number;
   allowExitOnIdle: boolean;
+  query_timeout: number;
+  statement_timeout: number;
 }> = {}): object {
   return {
     connectionString: IS_SANDBOX
@@ -451,6 +461,8 @@ function getPoolOptions(overrides: Partial<{
     ssl: overrides.ssl ?? productionSsl,
     maxUses: overrides.maxUses ?? POOL_MAX_USES,
     allowExitOnIdle: overrides.allowExitOnIdle ?? POOL_ALLOW_EXIT_ON_IDLE,
+    query_timeout: overrides.query_timeout ?? QUERY_TIMEOUT_MS,
+    statement_timeout: overrides.statement_timeout ?? STATEMENT_TIMEOUT_MS,
   };
 }
 
@@ -525,6 +537,8 @@ const replicaPools: Pool[] = replicaUrls.map(
       ssl: productionSsl,
       maxUses: POOL_MAX_USES,
       allowExitOnIdle: POOL_ALLOW_EXIT_ON_IDLE,
+      query_timeout: QUERY_TIMEOUT_MS,
+      statement_timeout: STATEMENT_TIMEOUT_MS,
     }),
 );
 
@@ -840,4 +854,32 @@ export async function getPoolStats(): Promise<{
     },
     replicas: replicaStats,
   };
+}
+
+/**
+ * Executes an array of queries within a database transaction.
+ * Ensures the database connection is cleanly released back to the pool on errors/timeouts.
+ * 
+ * @param queries - Array of { text, params } query configurations
+ */
+export async function executeTransaction(
+  queries: Array<{ text: string; params?: unknown[] }>
+): Promise<void> {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    for (const query of queries) {
+      await client.query(query.text, query.params);
+    }
+    
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    // Crucial: Releases the connection regardless of success or timeout failure
+    client.release();
+  }
 }
