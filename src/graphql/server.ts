@@ -28,6 +28,64 @@ const mergedResolvers = {
   ...subscriptionResolvers,
 };
 
+function persistedQueryHash(request: any): string | undefined {
+  const hash = request?.extensions?.persistedQuery?.sha256Hash;
+  return typeof hash === "string" && hash.length > 0 ? hash : undefined;
+}
+
+function hasQueryText(request: any): boolean {
+  return typeof request?.query === "string" && request.query.trim().length > 0;
+}
+
+function createAPQInstrumentationPlugin() {
+  return {
+    async requestDidStart(requestContext: any) {
+      const hash = persistedQueryHash(requestContext.request);
+      if (!hash) return {};
+
+      const requestHasQueryText = hasQueryText(requestContext.request);
+      logger.info(
+        {
+          apqHash: hash,
+          hashOnly: !requestHasQueryText,
+        },
+        "GraphQL APQ request received",
+      );
+
+      return {
+        async didResolveOperation() {
+          if (!requestHasQueryText) {
+            logger.info(
+              { apqHash: hash },
+              "GraphQL APQ hash resolved from Redis cache",
+            );
+          }
+        },
+        async didEncounterErrors(errorContext: any) {
+          const codes = (errorContext.errors || []).map(
+            (error: any) => error?.extensions?.code,
+          );
+          if (codes.includes("PERSISTED_QUERY_NOT_FOUND")) {
+            logger.info(
+              { apqHash: hash },
+              "GraphQL APQ hash not found; client should retry with full query",
+            );
+          }
+        },
+        async willSendResponse(responseContext: any) {
+          const errors = responseContext.errors || [];
+          if (requestHasQueryText && errors.length === 0) {
+            logger.info(
+              { apqHash: hash },
+              "GraphQL APQ query hash stored in Redis cache",
+            );
+          }
+        },
+      };
+    },
+  };
+}
+
 export async function startApolloServer(
   app: Application,
   httpServer: Server,
@@ -70,6 +128,7 @@ export async function startApolloServer(
       process.env.NODE_ENV === "production"
         ? ApolloServerPluginLandingPageProductionDefault({ footer: false })
         : ApolloServerPluginLandingPageGraphQLPlayground(),
+      createAPQInstrumentationPlugin(),
       // Plugin for proper shutdown of WebSocket server
       {
         async serverWillStart() {

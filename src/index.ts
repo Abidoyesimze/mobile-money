@@ -704,7 +704,7 @@ async function initializeRuntime(): Promise<void> {
 
     // Start Apollo Server with APQ enabled (must run after HTTP server is created)
     await startApolloServer(app, server);
-    console.log("Apollo GraphQL server started at /graphql");
+    console.log("Apollo GraphQL server started at /graphql with Redis APQ");
   }
 }
 
