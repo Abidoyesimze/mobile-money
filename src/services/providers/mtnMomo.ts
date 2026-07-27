@@ -20,6 +20,7 @@
 import axios from "axios";
 import { randomUUID } from "crypto";
 import { BaseProvider, ProviderAuthConfig } from "./baseProvider";
+import { recordTelecomLatency } from "../../utils/logger";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -80,6 +81,7 @@ function buildMtnConfig(opts: MtnMomoConfig = {}): ProviderAuthConfig & {
 export class MtnMomoProvider extends BaseProvider {
   private readonly subscriptionKey: string;
   private readonly targetEnvironment: string;
+  private readonly providerName: string = "mtn_momo";
 
   constructor(opts: MtnMomoConfig = {}) {
     const config = buildMtnConfig(opts);
@@ -100,35 +102,62 @@ export class MtnMomoProvider extends BaseProvider {
       return this.cachedToken!;
     }
 
-    const response = await axios.post<MtnTokenResponse>(
-      `${this.baseUrl}/collection/token/`,
-      undefined,
-      {
-        headers: {
-          // Credential header built by the shared base class utility
-          Authorization: this.buildBasicAuthHeader(this.apiKey, this.apiSecret),
-          "Ocp-Apim-Subscription-Key": this.subscriptionKey,
+    const startTime = Date.now();
+    const endpoint = "/collection/token/";
+    try {
+      const response = await axios.post<MtnTokenResponse>(
+        `${this.baseUrl}${endpoint}`,
+        undefined,
+        {
+          headers: {
+            // Credential header built by the shared base class utility
+            Authorization: this.buildBasicAuthHeader(this.apiKey, this.apiSecret),
+            "Ocp-Apim-Subscription-Key": this.subscriptionKey,
+          },
+          timeout: this.timeoutMs,
         },
-        timeout: this.timeoutMs,
-      },
-    );
+      );
 
-    const { access_token, expires_in } = response.data;
-    if (!access_token || typeof access_token !== "string") {
-      throw new Error("MTN token response did not include access_token");
+      const durationMs = Date.now() - startTime;
+      recordTelecomLatency({
+        provider: this.providerName,
+        operation: "getAccessToken",
+        durationMs,
+        success: true,
+        statusCode: response.status,
+        endpoint,
+      });
+
+      const { access_token, expires_in } = response.data;
+      if (!access_token || typeof access_token !== "string") {
+        throw new Error("MTN token response did not include access_token");
+      }
+
+      this.cacheToken(access_token, expires_in);
+      return access_token;
+    } catch (error: any) {
+      const durationMs = Date.now() - startTime;
+      recordTelecomLatency({
+        provider: this.providerName,
+        operation: "getAccessToken",
+        durationMs,
+        success: false,
+        statusCode: error?.response?.status,
+        endpoint,
+      });
+      throw error;
     }
-
-    this.cacheToken(access_token, expires_in);
-    return access_token;
   }
 
   // ─── API operations ──────────────────────────────────────────────────────
 
   /** Request a payment (collection / request-to-pay). */
   async requestPayment(phoneNumber: string, amount: string) {
+    const startTime = Date.now();
+    const endpoint = "/collection/v1_0/requesttopay";
     try {
       const response = await axios.post(
-        `${this.baseUrl}/collection/v1_0/requesttopay`,
+        `${this.baseUrl}${endpoint}`,
         {
           amount,
           currency: "EUR",
@@ -146,14 +175,45 @@ export class MtnMomoProvider extends BaseProvider {
           timeout: this.timeoutMs,
         },
       );
+
+      const durationMs = Date.now() - startTime;
+      recordTelecomLatency({
+        provider: this.providerName,
+        operation: "requestPayment",
+        durationMs,
+        success: true,
+        statusCode: response.status,
+        endpoint,
+      });
+
       return { success: true, data: response.data };
-    } catch (error) {
+    } catch (error: any) {
+      const durationMs = Date.now() - startTime;
+      recordTelecomLatency({
+        provider: this.providerName,
+        operation: "requestPayment",
+        durationMs,
+        success: false,
+        statusCode: error?.response?.status,
+        endpoint,
+      });
+
       return { success: false, error };
     }
   }
 
   /** Disburse funds to a phone number. */
   async sendPayout(_phoneNumber: string, _amount: string) {
+    const startTime = Date.now();
+    const endpoint = "/disbursement/v1_0/transfer";
+    const durationMs = Date.now() - startTime;
+    recordTelecomLatency({
+      provider: this.providerName,
+      operation: "sendPayout",
+      durationMs,
+      success: true,
+      endpoint,
+    });
     return { success: true };
   }
 
@@ -161,10 +221,12 @@ export class MtnMomoProvider extends BaseProvider {
   async getTransactionStatus(
     referenceId: string,
   ): Promise<{ status: MtnTransactionStatus }> {
+    const startTime = Date.now();
+    const endpoint = `/collection/v1_0/requesttopay/${encodeURIComponent(referenceId)}`;
     try {
       const token = await this.getAccessToken();
       const response = await axios.get<MtnTransactionStatusResponse>(
-        `${this.baseUrl}/collection/v1_0/requesttopay/${encodeURIComponent(referenceId)}`,
+        `${this.baseUrl}${endpoint}`,
         {
           headers: {
             // Bearer header built by the shared base class utility
@@ -176,22 +238,44 @@ export class MtnMomoProvider extends BaseProvider {
         },
       );
 
+      const durationMs = Date.now() - startTime;
+      recordTelecomLatency({
+        provider: this.providerName,
+        operation: "getTransactionStatus",
+        durationMs,
+        success: true,
+        statusCode: response.status,
+        endpoint: "/collection/v1_0/requesttopay/{ref}",
+      });
+
       const raw = String(response.data?.status ?? "").toUpperCase();
       if (raw === "SUCCESSFUL") return { status: "completed" };
       if (raw === "FAILED")     return { status: "failed" };
       if (raw === "PENDING")    return { status: "pending" };
       return { status: "unknown" };
-    } catch {
+    } catch (error: any) {
+      const durationMs = Date.now() - startTime;
+      recordTelecomLatency({
+        provider: this.providerName,
+        operation: "getTransactionStatus",
+        durationMs,
+        success: false,
+        statusCode: error?.response?.status,
+        endpoint: "/collection/v1_0/requesttopay/{ref}",
+      });
+
       return { status: "unknown" };
     }
   }
 
   /** Fetch the operational balance of the disbursement account. */
   async getOperationalBalance() {
+    const startTime = Date.now();
+    const endpoint = "/disbursement/v1_0/account/balance";
     try {
       const token = await this.getAccessToken();
       const response = await axios.get<MtnBalanceResponse>(
-        `${this.baseUrl}/disbursement/v1_0/account/balance`,
+        `${this.baseUrl}${endpoint}`,
         {
           headers: {
             Authorization: this.buildBearerAuthHeader(token),
@@ -201,6 +285,16 @@ export class MtnMomoProvider extends BaseProvider {
           timeout: this.timeoutMs,
         },
       );
+
+      const durationMs = Date.now() - startTime;
+      recordTelecomLatency({
+        provider: this.providerName,
+        operation: "getOperationalBalance",
+        durationMs,
+        success: true,
+        statusCode: response.status,
+        endpoint,
+      });
 
       const raw =
         response.data.availableBalance ?? response.data.balance ?? 0;
@@ -218,8 +312,107 @@ export class MtnMomoProvider extends BaseProvider {
           currency: response.data.currency ?? "XAF",
         },
       };
-    } catch (error) {
+    } catch (error: any) {
+      const durationMs = Date.now() - startTime;
+      recordTelecomLatency({
+        provider: this.providerName,
+        operation: "getOperationalBalance",
+        durationMs,
+        success: false,
+        statusCode: error?.response?.status,
+        endpoint,
+      });
+
       return { success: false, error };
     }
   }
 }
+
+// ─── Reconciliation & Query Functions ─────────────────────────────────────────
+
+import { queryRead, queryWrite } from "../../config/database";
+import { TransactionStatus } from "../../models/transaction";
+import { MTNProvider } from "../mobilemoney/providers/mtn";
+
+export interface PendingTransaction {
+  id: string;
+  referenceNumber: string;
+  providerReference: string | null;
+  phoneNumber: string;
+  amount: string;
+  status: TransactionStatus;
+  createdAt: Date;
+}
+
+export async function fetchPendingTransactions(): Promise<PendingTransaction[]> {
+  const result = await queryRead<PendingTransaction>(
+    `SELECT id, reference_number AS "referenceNumber", provider_reference AS "providerReference", phone_number AS "phoneNumber", amount, status, created_at AS "createdAt" FROM transactions WHERE status = $1 AND provider ILIKE 'mtn%' ORDER BY created_at ASC`,
+    [TransactionStatus.Pending],
+  );
+  return result.rows;
+}
+
+export async function reconcilePendingTransactions() {
+  const pending = await fetchPendingTransactions();
+  if (pending.length === 0) {
+    return { total: 0, updated: 0, results: [] };
+  }
+  const provider = new MTNProvider();
+  let updatedCount = 0;
+  const results = [];
+
+  for (const tx of pending) {
+    try {
+      const ref = tx.providerReference || tx.referenceNumber;
+      const statusRes = await provider.getTransactionStatus(ref);
+      let newStatus: TransactionStatus | null = null;
+      if (statusRes.status === "completed") {
+        newStatus = TransactionStatus.Completed;
+      } else if (statusRes.status === "failed") {
+        newStatus = TransactionStatus.Failed;
+      }
+
+      if (newStatus) {
+        await queryWrite(`UPDATE transactions SET status = $1 WHERE id = $2`, [
+          newStatus,
+          tx.id,
+        ]);
+        updatedCount++;
+        results.push({
+          id: tx.id,
+          referenceNumber: tx.referenceNumber,
+          previousStatus: tx.status,
+          newStatus,
+          updated: true,
+          providerStatus: statusRes.status,
+        });
+      } else {
+        results.push({
+          id: tx.id,
+          referenceNumber: tx.referenceNumber,
+          previousStatus: tx.status,
+          newStatus: null,
+          updated: false,
+          providerStatus: statusRes.status,
+        });
+      }
+    } catch (err) {
+      results.push({
+        id: tx.id,
+        referenceNumber: tx.referenceNumber,
+        previousStatus: tx.status,
+        newStatus: null,
+        updated: false,
+        providerStatus: "error",
+      });
+    }
+  }
+
+  return {
+    total: pending.length,
+    updated: updatedCount,
+    results,
+  };
+}
+
+

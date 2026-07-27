@@ -448,3 +448,208 @@ export function childLogger(
 ): any {
   return logger.child({ trace_id: traceId, ...extra });
 }
+
+// ---------------------------------------------------------------------------
+// Telecom Latency Tracking & Audit Logging
+// ---------------------------------------------------------------------------
+
+export interface TelecomLatencyMetric {
+  provider: string;
+  operation: string;
+  durationMs: number;
+  success: boolean;
+  statusCode?: number;
+  endpoint?: string;
+  timestamp?: string;
+}
+
+export interface TelecomOperationStats {
+  operation: string;
+  count: number;
+  successCount: number;
+  errorCount: number;
+  avgDurationMs: number;
+  minDurationMs: number;
+  maxDurationMs: number;
+}
+
+export interface TelecomProviderMetricsSummary {
+  provider: string;
+  totalRequests: number;
+  successCount: number;
+  errorCount: number;
+  overallAvgDurationMs: number;
+  minDurationMs: number;
+  maxDurationMs: number;
+  operations: Record<string, TelecomOperationStats>;
+}
+
+const AUDIT_LOG_DIR = path.join(LOG_DIR, "audit");
+export const TELECOM_METRICS_LOG_FILE = path.join(
+  AUDIT_LOG_DIR,
+  "telecom-metrics.log",
+);
+
+const telecomLatencyStore: TelecomLatencyMetric[] = [];
+const MAX_STORE_ENTRIES = 5000;
+
+function ensureAuditLogDirectory(): void {
+  try {
+    if (!fs.existsSync(AUDIT_LOG_DIR)) {
+      fs.mkdirSync(AUDIT_LOG_DIR, { recursive: true });
+    }
+  } catch (err) {
+    logger.error("Failed to create audit log directory:", err);
+  }
+}
+
+/**
+ * Record round-trip response time for telecom provider requests.
+ * Writes performance metrics to the audit log folder (logs/audit/telecom-metrics.log),
+ * updates in-memory store for admin metrics API, and logs via Pino.
+ */
+export function recordTelecomLatency(metric: TelecomLatencyMetric): void {
+  const timestamp = metric.timestamp ?? new Date().toISOString();
+  const entry: TelecomLatencyMetric = {
+    ...metric,
+    timestamp,
+    durationMs: Math.max(0, Math.round(metric.durationMs * 100) / 100),
+  };
+
+  telecomLatencyStore.push(entry);
+  if (telecomLatencyStore.length > MAX_STORE_ENTRIES) {
+    telecomLatencyStore.shift();
+  }
+
+  ensureAuditLogDirectory();
+
+  try {
+    const logLine = JSON.stringify(entry) + "\n";
+    fs.appendFileSync(TELECOM_METRICS_LOG_FILE, logLine, "utf8");
+  } catch (err) {
+    logger.error("Failed to write to telecom audit log file:", err);
+  }
+
+  relaxedLogger.info(
+    {
+      type: "telecom_latency_metric",
+      ...entry,
+    },
+    `Telecom API latency: ${entry.provider} - ${entry.operation} took ${entry.durationMs}ms`,
+  );
+}
+
+/**
+ * Retrieve aggregated telecom latency metrics including average response times overall
+ * and broken down per operation. Reads from in-memory store and falls back to
+ * reading the audit log file if in-memory store is empty.
+ */
+export function getTelecomAverageMetrics(
+  providerFilter?: string,
+): TelecomProviderMetricsSummary {
+  let records: TelecomLatencyMetric[] = [...telecomLatencyStore];
+
+  if (records.length === 0 && fs.existsSync(TELECOM_METRICS_LOG_FILE)) {
+    try {
+      const fileContent = fs.readFileSync(TELECOM_METRICS_LOG_FILE, "utf8");
+      const lines = fileContent.split("\n").filter((l) => l.trim().length > 0);
+      records = lines.map((line) => JSON.parse(line));
+    } catch (err) {
+      logger.error("Error reading telecom audit log file:", err);
+    }
+  }
+
+  if (providerFilter) {
+    const filterLower = providerFilter.toLowerCase();
+    records = records.filter(
+      (r) => r.provider.toLowerCase() === filterLower,
+    );
+  }
+
+  const totalRequests = records.length;
+  if (totalRequests === 0) {
+    return {
+      provider: providerFilter ?? "all",
+      totalRequests: 0,
+      successCount: 0,
+      errorCount: 0,
+      overallAvgDurationMs: 0,
+      minDurationMs: 0,
+      maxDurationMs: 0,
+      operations: {},
+    };
+  }
+
+  let totalDuration = 0;
+  let successCount = 0;
+  let errorCount = 0;
+  let minDurationMs = Infinity;
+  let maxDurationMs = -Infinity;
+
+  const opGroupMap: Record<string, TelecomLatencyMetric[]> = {};
+
+  for (const r of records) {
+    totalDuration += r.durationMs;
+    if (r.success) {
+      successCount++;
+    } else {
+      errorCount++;
+    }
+
+    if (r.durationMs < minDurationMs) minDurationMs = r.durationMs;
+    if (r.durationMs > maxDurationMs) maxDurationMs = r.durationMs;
+
+    const opKey = r.operation || "unknown";
+    if (!opGroupMap[opKey]) {
+      opGroupMap[opKey] = [];
+    }
+    opGroupMap[opKey].push(r);
+  }
+
+  const operations: Record<string, TelecomOperationStats> = {};
+  for (const [opKey, opRecords] of Object.entries(opGroupMap)) {
+    let opTotalDuration = 0;
+    let opSuccess = 0;
+    let opError = 0;
+    let opMin = Infinity;
+    let opMax = -Infinity;
+
+    for (const r of opRecords) {
+      opTotalDuration += r.durationMs;
+      if (r.success) opSuccess++;
+      else opError++;
+
+      if (r.durationMs < opMin) opMin = r.durationMs;
+      if (r.durationMs > opMax) opMax = r.durationMs;
+    }
+
+    operations[opKey] = {
+      operation: opKey,
+      count: opRecords.length,
+      successCount: opSuccess,
+      errorCount: opError,
+      avgDurationMs: Math.round((opTotalDuration / opRecords.length) * 100) / 100,
+      minDurationMs: opMin === Infinity ? 0 : Math.round(opMin * 100) / 100,
+      maxDurationMs: opMax === -Infinity ? 0 : Math.round(opMax * 100) / 100,
+    };
+  }
+
+  return {
+    provider: providerFilter ?? "all",
+    totalRequests,
+    successCount,
+    errorCount,
+    overallAvgDurationMs: Math.round((totalDuration / totalRequests) * 100) / 100,
+    minDurationMs: minDurationMs === Infinity ? 0 : Math.round(minDurationMs * 100) / 100,
+    maxDurationMs: maxDurationMs === -Infinity ? 0 : Math.round(maxDurationMs * 100) / 100,
+    operations,
+  };
+}
+
+/**
+ * Clears in-memory metrics store (useful for testing).
+ */
+export function clearTelecomMetricsStore(): void {
+  telecomLatencyStore.length = 0;
+}
+

@@ -6,6 +6,7 @@ import { dbReplicaLagSeconds, dbReplicaReadEnabled } from "../utils/metrics";
 import { startDeadlockDetector } from "./deadlockDetector";
 import { IS_SANDBOX, SANDBOX_DATABASE_URL, DATABASE_URL, DR_DATABASE_URL } from "./env";
 
+
 const isDRMode = (): boolean => !!DR_DATABASE_URL;
 
 const productionSsl =
