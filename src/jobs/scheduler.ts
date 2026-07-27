@@ -26,6 +26,7 @@ import { INDEX_REINDEX_CRON, INDEX_REINDEX_JOB_ENABLED } from "../config/env";
 import { runIndexReindexJob } from "./indexReindexJob";
 import { runSanctionSyncJob } from "./sanctionSyncJob";
 import { runJwtKeyRotationJob } from "./jwtKeyRotationJob";
+import { runRebalanceJobHandler } from "./rebalanceJob";
 import { startNotificationWorker } from "../workers/notificationWorker";
 import { runTravelRuleExportJob } from "../services/compliance/travelRuleExport";
 
@@ -175,8 +176,14 @@ const JOBS: JobConfig[] = [
     handler: runJwtKeyRotationJob,
   },
   {
+    name: "rebalance",
+    // Every 5 minutes — monitors operator balances and rebalances on float limit breach
+    schedule: process.env.REBALANCE_JOB_CRON || "*/5 * * * *",
+    handler: runRebalanceJobHandler,
+  },
+  {
     name: "sanction-sync",
-    // Daily at 1:00 AM - streams and indexes sanctions list updates, clears match cache
+    // Daily at 1:00 AM - syncs internal sanction list with global lists
     schedule: process.env.SANCTION_SYNC_CRON || "0 1 * * *",
     handler: runSanctionSyncJob,
   },
