@@ -46,29 +46,54 @@ const feeDisplay = document.getElementById("fee-display");
 const finalDisplay = document.getElementById("final-display");
 
 function calculateConversion() {
+  if (!sendAmountInput || !sendCurrencySelect || !receiveAssetSelect) return;
+
   const sendAmt = parseFloat(sendAmountInput.value) || 0;
   const sendCurrency = sendCurrencySelect.value;
   const receiveAsset = receiveAssetSelect.value;
 
   const config = RATES[sendCurrency];
-  const rate = config[receiveAsset];
+  if (!config) return;
+
+  const rate = config[receiveAsset] || 0;
 
   // Operator fee (1.5%)
   const fee = sendAmt * 0.015;
   const netAmt = Math.max(0, sendAmt - fee);
   const receiveVal = netAmt * rate;
 
-  // Update DOM elements
-  rateDisplay.textContent = config.rateStr.replace("USDC", receiveAsset);
-  feeDisplay.textContent = `${fee.toFixed(0)} ${sendCurrency}`;
-  receiveAmountInput.value = receiveVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-  finalDisplay.textContent = `${receiveAmountInput.value} ${receiveAsset}`;
+  // Format decimal display outputs to 2 decimal places
+  const formattedFee = fee.toFixed(2);
+  const formattedReceiveVal = receiveVal.toFixed(2);
+
+  // Update DOM elements cleanly
+  if (rateDisplay) {
+    rateDisplay.textContent = config.rateStr.replace("USDC", receiveAsset);
+  }
+  if (feeDisplay) {
+    feeDisplay.textContent = `${formattedFee} ${sendCurrency}`;
+  }
+  if (receiveAmountInput) {
+    receiveAmountInput.value = formattedReceiveVal;
+  }
+  if (finalDisplay) {
+    finalDisplay.textContent = `${formattedReceiveVal} ${receiveAsset}`;
+  }
 }
 
-// Add event listeners for inputs
-sendAmountInput.addEventListener("input", calculateConversion);
-sendCurrencySelect.addEventListener("change", calculateConversion);
-receiveAssetSelect.addEventListener("change", calculateConversion);
+// Add event listeners for inputs (including keypress and keyup for live calculation)
+if (sendAmountInput) {
+  sendAmountInput.addEventListener("input", calculateConversion);
+  sendAmountInput.addEventListener("keypress", calculateConversion);
+  sendAmountInput.addEventListener("keyup", calculateConversion);
+  sendAmountInput.addEventListener("change", calculateConversion);
+}
+if (sendCurrencySelect) {
+  sendCurrencySelect.addEventListener("change", calculateConversion);
+}
+if (receiveAssetSelect) {
+  receiveAssetSelect.addEventListener("change", calculateConversion);
+}
 
 // Initial calculation
 calculateConversion();
