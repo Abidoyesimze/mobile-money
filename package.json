@@ -186,7 +186,9 @@
     "uuid": "^9.0.0",
     "ws": "^8.18.0",
     "xmlbuilder2": "^4.0.3",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "winston": "^3.11.0",
+    "winston-daily-rotate-file": "^5.0.0"
   },
   "overrides": {
     "@opentelemetry/exporter-trace-otlp-http": "^0.221.0"
