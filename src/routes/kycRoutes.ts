@@ -124,7 +124,35 @@ export const createKYCRoutes = (db: Pool): Router => {
         }
 
         // Get required metadata from request body first
-        const { applicant_id, document_type, document_side } = req.body;
+        const {
+          applicant_id,
+          document_type,
+          document_side,
+          expiry_date,
+          expiryDate,
+          expiration_date,
+          expirationDate,
+        } = req.body;
+
+        const rawExpiryDate =
+          expiry_date || expiryDate || expiration_date || expirationDate;
+
+        if (
+          rawExpiryDate !== undefined &&
+          rawExpiryDate !== null &&
+          rawExpiryDate !== ""
+        ) {
+          const expiryValidation = validateExpiryDate(rawExpiryDate);
+          if (!expiryValidation.isValid) {
+            throw createError(
+              ERROR_CODES.INVALID_INPUT,
+              expiryValidation.error || "Invalid expiry date",
+              {
+                error: expiryValidation.error || "Invalid expiry date",
+              },
+            );
+          }
+        }
 
         if (!applicant_id) {
           throw createError(

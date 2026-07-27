@@ -345,6 +345,28 @@ describe("KYC Document Upload", () => {
       expect(response.body.error).toContain("Invalid file type");
     });
 
+    it("should reject upload when document expiry date is in the past", async () => {
+      const response = await request(app)
+        .post("/api/kyc/documents/upload")
+        .attach("document", Buffer.from("test pdf content"), "test.pdf")
+        .field("applicant_id", "test-applicant-id")
+        .field("expiry_date", "2020-01-01");
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain("expired");
+    });
+
+    it("should reject upload when document expiry date string is invalid", async () => {
+      const response = await request(app)
+        .post("/api/kyc/documents/upload")
+        .attach("document", Buffer.from("test pdf content"), "test.pdf")
+        .field("applicant_id", "test-applicant-id")
+        .field("expiry_date", "not-a-date");
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain("Invalid expiry date format");
+    });
+
     it("should reject upload without applicant_id", async () => {
       const response = await request(app)
         .post("/api/kyc/documents/upload")

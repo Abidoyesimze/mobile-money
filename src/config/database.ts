@@ -3,9 +3,8 @@ import { Pool, QueryConfig, QueryResult, QueryResultRow, PoolClient } from "pg";
 import { auditService } from "../services/auditlogService";
 import { isReadOnlyQuery } from "../utils/readOnlyDetector";
 import { dbReplicaLagSeconds, dbReplicaReadEnabled } from "../utils/metrics";
-import { IS_SANDBOX, SANDBOX_DATABASE_URL, DATABASE_URL } from "./env";
+import { IS_SANDBOX, SANDBOX_DATABASE_URL, DATABASE_URL, DR_DATABASE_URL } from "./env";
 
-const DR_DATABASE_URL = process.env.DR_DATABASE_URL;
 const isDRMode = (): boolean => !!DR_DATABASE_URL;
 
 const productionSsl =
@@ -27,6 +26,32 @@ const PRIMARY_POOL_RECONNECT_DELAY_MS = parseInt(
 );
 const PRIMARY_POOL_MAX_RETRIES = parseInt(
   process.env.DB_MAX_RETRIES || "3",
+  10,
+);
+const MAX_CONNECTIONS = parseInt(
+  process.env.DB_MAX_CONNECTIONS || "50",
+  10,
+);
+const POOL_MAX_USES = parseInt(
+  process.env.DB_POOL_MAX_USES || "0",
+  10,
+);
+const POOL_ALLOW_EXIT_ON_IDLE =
+  process.env.DB_POOL_ALLOW_EXIT_ON_IDLE === "true";
+const POOL_IDLE_TIMEOUT_MS = parseInt(
+  process.env.DB_POOL_IDLE_TIMEOUT_MS || "15000",
+  10,
+);
+const POOL_CONNECTION_TIMEOUT_MS = parseInt(
+  process.env.DB_POOL_CONNECTION_TIMEOUT_MS || "5000",
+  10,
+);
+const REPLICA_IDLE_TIMEOUT_MS = parseInt(
+  process.env.DB_REPLICA_IDLE_TIMEOUT_MS || "30000",
+  10,
+);
+const REPLICA_CONNECTION_TIMEOUT_MS = parseInt(
+  process.env.DB_REPLICA_CONNECTION_TIMEOUT_MS || "500",
   10,
 );
 
@@ -383,7 +408,7 @@ function schedulePrimaryPoolReconnect(error: unknown): void {
 async function reconnectPrimaryPool(): Promise<void> {
   try {
     const previousPool = pool;
-    const nextPool = new Pool(buildPoolOptions());
+    const nextPool = new Pool(getPoolOptions());
 
     nextPool.on("error", (err) => {
       logger.error("[Database] Primary pool error", err);
@@ -407,97 +432,30 @@ async function reconnectPrimaryPool(): Promise<void> {
   }
 }
 
-/* ── Dynamic pool sizing (#1652) ─────────────────────────────────── */
-
-/**
- * Get the current pool connection utilization (active / total).
- */
-function getPoolUtilization(poolInstance: Pool): number {
-  const total = poolInstance.totalCount;
-  const idle = poolInstance.idleCount;
-  const active = total - idle;
-  return total > 0 ? active / total : 0;
-}
-
-/**
- * Dynamically adjust the pool's max size based on utilization.
- * Scales up during surges, scales down during low load.
- * Prevents the pool from exceeding the database's max_connections.
- */
-async function adjustPoolSize(poolInstance: Pool): Promise<void> {
-  const now = Date.now();
-  if (resizeInProgress || now - lastResizeTime < POOL_RESIZE_COOLDOWN_MS) {
-    return;
-  }
-
-  const utilization = getPoolUtilization(poolInstance);
-  const dbMaxPerPool = Math.max(1, Math.floor(DB_MAX_CONNECTIONS / 2));
-
-  if (utilization >= POOL_SCALE_UP_THRESHOLD && currentPoolMax < POOL_MAX) {
-    // Scale up: add connections in steps of 25%, capped at POOL_MAX
-    const newMax = Math.min(
-      Math.ceil(currentPoolMax * 1.25),
-      POOL_MAX,
-      dbMaxPerPool,
-    );
-    if (newMax > currentPoolMax) {
-      resizeInProgress = true;
-      currentPoolMax = newMax;
-      poolInstance.options.max = newMax;
-      lastResizeTime = now;
-      logger.info(
-        { from: currentPoolMax, to: newMax, utilization },
-        "[Pool] Scaled up due to high utilization",
-      );
-      resizeInProgress = false;
-    }
-  } else if (
-    utilization <= POOL_SCALE_DOWN_THRESHOLD &&
-    currentPoolMax > POOL_MIN
-  ) {
-    // Scale down: reduce connections in steps of 25%, floored at POOL_MIN
-    const newMax = Math.max(
-      Math.floor(currentPoolMax * 0.75),
-      POOL_MIN,
-    );
-    if (newMax < currentPoolMax) {
-      resizeInProgress = true;
-      currentPoolMax = newMax;
-      poolInstance.options.max = newMax;
-      lastResizeTime = now;
-      logger.info(
-        { from: currentPoolMax, to: newMax, utilization },
-        "[Pool] Scaled down due to low utilization",
-      );
-      resizeInProgress = false;
-    }
-  }
-}
-
-/**
- * Start the pool monitor that periodically checks utilization and adjusts
- * pool size. Returns the interval handle for cleanup.
- */
-function startPoolMonitor(poolInstance: Pool): ReturnType<typeof setInterval> {
-  return setInterval(() => {
-    void adjustPoolSize(poolInstance);
-  }, POOL_MONITOR_INTERVAL_MS);
-}
-
-function buildPoolOptions(): import("pg").PoolConfig {
+function getPoolOptions(overrides: Partial<{
+  max: number;
+  idleTimeoutMillis: number;
+  connectionTimeoutMillis: number;
+  ssl: boolean | undefined;
+  maxUses: number;
+  allowExitOnIdle: boolean;
+}> = {}): object {
   return {
     connectionString: IS_SANDBOX
       ? SANDBOX_DATABASE_URL || DATABASE_URL
       : DATABASE_URL,
-    max: POOL_DEFAULT_MAX,
-    idleTimeoutMillis: 15000,
-    connectionTimeoutMillis: 5000,
-    ssl: productionSsl,
+    max: overrides.max ?? MAX_CONNECTIONS,
+    idleTimeoutMillis: overrides.idleTimeoutMillis ?? POOL_IDLE_TIMEOUT_MS,
+    connectionTimeoutMillis:
+      overrides.connectionTimeoutMillis ?? POOL_CONNECTION_TIMEOUT_MS,
+    ssl: overrides.ssl ?? productionSsl,
+    maxUses: overrides.maxUses ?? POOL_MAX_USES,
+    allowExitOnIdle: overrides.allowExitOnIdle ?? POOL_ALLOW_EXIT_ON_IDLE,
   };
 }
 
 function createPrimaryPool(): Pool {
-  const newPool = new Pool(buildPoolOptions());
+  const newPool = new Pool(getPoolOptions());
 
   newPool.on("error", (err) => {
     logger.error("[Database] Primary pool error", err);
@@ -561,10 +519,12 @@ const replicaPools: Pool[] = replicaUrls.map(
   (url) =>
     new Pool({
       connectionString: url,
-      max: parseInt(process.env.DB_REPLICA_POOL_MAX || "50", 10),
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 500,
+      max: MAX_CONNECTIONS,
+      idleTimeoutMillis: REPLICA_IDLE_TIMEOUT_MS,
+      connectionTimeoutMillis: REPLICA_CONNECTION_TIMEOUT_MS,
       ssl: productionSsl,
+      maxUses: POOL_MAX_USES,
+      allowExitOnIdle: POOL_ALLOW_EXIT_ON_IDLE,
     }),
 );
 

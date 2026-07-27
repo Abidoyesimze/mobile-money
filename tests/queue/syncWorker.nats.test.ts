@@ -138,7 +138,7 @@ describe("syncWorker — NATS consumer group configuration", () => {
     delete process.env.NATS_CONSUMER_GROUP;
 
     const { NATS_SYNC_CONSUMER_GROUP } =
-      await import("../../src/queue/syncWorker");
+      require("../../src/queue/syncWorker");
 
     expect(NATS_SYNC_CONSUMER_GROUP).toBe("accounting-sync-group");
   });
@@ -148,7 +148,7 @@ describe("syncWorker — NATS consumer group configuration", () => {
     delete process.env.NATS_CONSUMER_GROUP;
 
     const { NATS_SYNC_CONSUMER_GROUP } =
-      await import("../../src/queue/syncWorker");
+      require("../../src/queue/syncWorker");
 
     expect(NATS_SYNC_CONSUMER_GROUP).toBe("custom-sync-group");
   });
@@ -158,7 +158,7 @@ describe("syncWorker — NATS consumer group configuration", () => {
     process.env.NATS_CONSUMER_GROUP = "shared-consumer-group";
 
     const { NATS_SYNC_CONSUMER_GROUP } =
-      await import("../../src/queue/syncWorker");
+      require("../../src/queue/syncWorker");
 
     expect(NATS_SYNC_CONSUMER_GROUP).toBe("shared-consumer-group");
   });
@@ -168,7 +168,7 @@ describe("syncWorker — NATS consumer group configuration", () => {
     process.env.NATS_CONSUMER_GROUP = "shared-consumer-group";
 
     const { NATS_SYNC_CONSUMER_GROUP } =
-      await import("../../src/queue/syncWorker");
+      require("../../src/queue/syncWorker");
 
     expect(NATS_SYNC_CONSUMER_GROUP).toBe("specific-sync-group");
   });
@@ -181,7 +181,7 @@ describe("syncWorker — NATS consumer group configuration", () => {
       NATS_SYNC_SUBJECT,
       NATS_SYNC_DURABLE_CONSUMER,
       NATS_SYNC_CONSUMER_GROUP,
-    } = await import("../../src/queue/syncWorker");
+    } = require("../../src/queue/syncWorker");
 
     expect(mockConsume).toHaveBeenCalledWith(
       NATS_SYNC_SUBJECT,
@@ -198,7 +198,7 @@ describe("syncWorker — NATS consumer group configuration", () => {
   it("passes a custom consumer group to natsManager.consume when env var is overridden", async () => {
     process.env.NATS_SYNC_CONSUMER_GROUP = "env-override-group";
 
-    await import("../../src/queue/syncWorker");
+    require("../../src/queue/syncWorker");
 
     const [, , calledGroup] = mockConsume.mock.calls[0];
     expect(calledGroup).toBe("env-override-group");
@@ -209,7 +209,7 @@ describe("syncWorker — NATS consumer group configuration", () => {
     delete process.env.NATS_SYNC_DURABLE_CONSUMER;
 
     const { NATS_SYNC_SUBJECT, NATS_SYNC_DURABLE_CONSUMER } =
-      await import("../../src/queue/syncWorker");
+      require("../../src/queue/syncWorker");
 
     expect(NATS_SYNC_SUBJECT).toBe("accounting.sync");
     expect(NATS_SYNC_DURABLE_CONSUMER).toBe("accounting-sync-consumer");
@@ -220,7 +220,7 @@ describe("syncWorker — NATS consumer group configuration", () => {
     process.env.NATS_SYNC_DURABLE_CONSUMER = "custom-consumer";
 
     const { NATS_SYNC_SUBJECT, NATS_SYNC_DURABLE_CONSUMER } =
-      await import("../../src/queue/syncWorker");
+      require("../../src/queue/syncWorker");
 
     expect(NATS_SYNC_SUBJECT).toBe("custom.subject");
     expect(NATS_SYNC_DURABLE_CONSUMER).toBe("custom-consumer");
@@ -248,7 +248,7 @@ describe("syncWorker — SYNC_WORKER_CONCURRENCY configuration", () => {
   it("passes the parsed SYNC_WORKER_CONCURRENCY value to natsManager.consume", async () => {
     process.env.SYNC_WORKER_CONCURRENCY = "7";
 
-    await import("../../src/queue/syncWorker");
+    require("../../src/queue/syncWorker");
 
     const concurrency = mockConsume.mock.calls[0][4];
     expect(concurrency).toBe(7);
@@ -257,7 +257,7 @@ describe("syncWorker — SYNC_WORKER_CONCURRENCY configuration", () => {
   it("defaults concurrency to 3 when SYNC_WORKER_CONCURRENCY is not set", async () => {
     delete process.env.SYNC_WORKER_CONCURRENCY;
 
-    await import("../../src/queue/syncWorker");
+    require("../../src/queue/syncWorker");
 
     const concurrency = mockConsume.mock.calls[0][4];
     expect(concurrency).toBe(3);
@@ -266,7 +266,7 @@ describe("syncWorker — SYNC_WORKER_CONCURRENCY configuration", () => {
   it("clamps concurrency to minimum 1 when value is 0 or negative", async () => {
     process.env.SYNC_WORKER_CONCURRENCY = "0";
 
-    await import("../../src/queue/syncWorker");
+    require("../../src/queue/syncWorker");
 
     const concurrency = mockConsume.mock.calls[0][4];
     expect(concurrency).toBe(1);
@@ -348,7 +348,7 @@ describe("syncWorker — processNatsSyncMessage handler", () => {
       ValidationError,
     }));
 
-    await import("../../src/queue/syncWorker");
+    require("../../src/queue/syncWorker");
     handler = capturedHandler();
   });
 
@@ -591,7 +591,7 @@ describe("syncWorker — NATS consume rejection is caught and logged", () => {
 
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
 
-    await import("../../src/queue/syncWorker");
+    require("../../src/queue/syncWorker");
 
     // The .catch() handler runs in the next microtask tick
     await new Promise((resolve) => setImmediate(resolve));
@@ -653,7 +653,7 @@ describe("syncWorker — closeSyncWorker", () => {
       ValidationError: class extends Error {},
     }));
 
-    const { closeSyncWorker } = await import("../../src/queue/syncWorker");
+    const { closeSyncWorker } = require("../../src/queue/syncWorker");
     await closeSyncWorker();
 
     expect(workerClose).toHaveBeenCalledTimes(1);
@@ -690,7 +690,7 @@ describe("syncWorker — closeSyncWorker", () => {
       ValidationError: class extends Error {},
     }));
 
-    const { closeSyncWorker } = await import("../../src/queue/syncWorker");
+    const { closeSyncWorker } = require("../../src/queue/syncWorker");
     await closeSyncWorker();
 
     expect(workerClose).toHaveBeenCalledTimes(1);
@@ -746,7 +746,7 @@ describe("syncWorker — NATS disabled branch", () => {
       ValidationError: class extends Error {},
     }));
 
-    await import("../../src/queue/syncWorker");
+    require("../../src/queue/syncWorker");
 
     expect(consume).not.toHaveBeenCalled();
   });

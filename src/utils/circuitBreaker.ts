@@ -271,6 +271,103 @@ export function getCircuitBreakerCount(): number {
   return circuitBreakers.size;
 }
 
+export interface CircuitBreakerStateInfo {
+  key: string;
+  provider: string;
+  operation: string;
+  state: "OPEN" | "CLOSED" | "HALF-OPEN";
+  stats: {
+    failures: number;
+    fallbacks: number;
+    successes: number;
+    rejects: number;
+    fires: number;
+    timeouts: number;
+  };
+  options: {
+    volumeThreshold: number;
+    errorThresholdPercentage: number;
+    timeout: number;
+  };
+}
+
+export function getAllCircuitBreakerStatesInfo(): CircuitBreakerStateInfo[] {
+  const defaultTelcos = [
+    { provider: "mtn", operation: "payment" },
+    { provider: "airtel", operation: "payment" },
+    { provider: "orange", operation: "payment" },
+    { provider: "mpesa", operation: "payment" },
+  ];
+
+  for (const item of defaultTelcos) {
+    const key = getCircuitKey(item.provider, item.operation);
+    if (!circuitBreakers.has(key)) {
+      void getOrCreateCircuitBreaker(item.provider, item.operation);
+    }
+  }
+
+  const result: CircuitBreakerStateInfo[] = [];
+  for (const [key, breaker] of circuitBreakers.entries()) {
+    const parts = key.split(":");
+    const provider = parts[0] || key;
+    const operation = parts[1] || "default";
+
+    const jsonState = (breaker as any).toJSON?.()?.state || {};
+    let stateStr: "OPEN" | "CLOSED" | "HALF-OPEN" = "CLOSED";
+    if (jsonState.open || (breaker as any).opened || (breaker as any).forcedOpen) {
+      stateStr = "OPEN";
+    } else if (jsonState.halfOpen || (breaker as any).halfOpen) {
+      stateStr = "HALF-OPEN";
+    }
+
+    const stats = (breaker as any).stats || {
+      failures: 0,
+      fallbacks: 0,
+      successes: 0,
+      rejects: 0,
+      fires: 0,
+      timeouts: 0,
+    };
+
+    result.push({
+      key,
+      provider,
+      operation,
+      state: stateStr,
+      stats: {
+        failures: stats.failures || 0,
+        fallbacks: stats.fallbacks || 0,
+        successes: stats.successes || 0,
+        rejects: stats.rejects || 0,
+        fires: stats.fires || 0,
+        timeouts: stats.timeouts || 0,
+      },
+      options: {
+        volumeThreshold: Number((breaker as any).options?.volumeThreshold ?? 3),
+        errorThresholdPercentage: Number((breaker as any).options?.errorThresholdPercentage ?? 50),
+        timeout: Number((breaker as any).options?.timeout ?? 5000),
+      },
+    });
+  }
+
+  return result;
+}
+
+export async function forceCloseCircuitBreaker(
+  provider: string,
+  operation: string = "payment",
+): Promise<void> {
+  const key = getCircuitKey(provider, operation);
+  const breaker = circuitBreakers.get(key);
+  if (breaker) {
+    if (typeof (breaker as any).close === "function") {
+      (breaker as any).close();
+    }
+    (breaker as any).forcedOpen = false;
+  }
+  emitStateTransitionMetric(provider, operation, "closed");
+}
+
 /**
  * Programmatically open (trip) the circuit breaker for a provider+operation.
  * Creates the breaker if it doesn't exist yet.
@@ -289,3 +386,4 @@ export async function tripCircuitBreaker(
   }
   emitStateTransitionMetric(provider, operation, "open");
 }
+
