@@ -52,7 +52,10 @@ import { resetCircuitBreakerForProvider } from "../utils/circuitBreaker";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { createError } from "../middleware/errorHandler";
 
+import adminControllerRouter from "../controllers/adminController";
+
 const router = Router();
+router.use("/monitoring", adminControllerRouter);
 const IMPERSONATION_TOKEN_EXPIRES_IN = "15m";
 const IMPERSONATION_TOKEN_TTL_MS = 15 * 60 * 1000;
 const READ_ONLY_IMPERSONATION_MESSAGE = "Read-only mode active";

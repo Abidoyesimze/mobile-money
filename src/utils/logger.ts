@@ -137,6 +137,37 @@ const PII_SCRUB_REGEX_FILTERS: ScrubFilter[] = [
     pattern: /\+1?\d{9,14}\b/g,
     replacement: SCRUB_CENSOR,
   },
+  // JWT tokens anywhere in text (three base64url segments separated by dots)
+  {
+    pattern: /\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Hex-encoded private keys (64+ consecutive hex chars — likely 256-bit keys)
+  {
+    pattern: /\b[a-fA-F0-9]{64,}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Base64-encoded secrets (40+ base64 chars — likely encrypted payloads)
+  {
+    pattern: /\b[A-Za-z0-9+/]{40,}={0,2}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Stellar public addresses (G… 56 chars) — redact from logs to prevent
+  // address correlation via log aggregation
+  {
+    pattern: /\bG[A-Z2-7]{55}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Stellar transaction hash or hex identifiers (64 hex chars)
+  {
+    pattern: /\b[a-f0-9]{64}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Stellar base64 transaction envelope XDR (long base64 with +/=)
+  {
+    pattern: /\bAAAA[A-Za-z0-9+/=]{100,}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
 ];
 
 const PII_KEY_VALUE_PATTERN =
