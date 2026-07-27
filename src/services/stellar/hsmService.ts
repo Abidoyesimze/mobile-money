@@ -202,6 +202,8 @@ export function createFileSignerFromEnv(): KmsFileSigner | null {
 
 // ─── Stellar HSM (unchanged below) ───────────────────────────────────────────
 
+import { getKmsClient } from "../../config/aws";
+
 /**
  * Interface for HSM Providers to ensure secrets never touch app memory
  */
@@ -218,7 +220,7 @@ export class KmsStellarSigner implements StellarHSMProvider {
     private keyId: string;
 
     constructor(region: string, keyId: string) {
-        this.client = new KMSClient({ region });
+        this.client = getKmsClient();
         this.keyId = keyId;
     }
 
@@ -231,11 +233,13 @@ export class KmsStellarSigner implements StellarHSMProvider {
 
         if (!response.PublicKey) throw new Error("Could not retrieve Public Key from HSM");
 
-        // Note: In a full implementation, you would parse the DER encoded public key 
-        // from KMS to extract the raw 32-byte Ed25519 key.
-        // For this wrapper, we assume the public key mapping is managed in config 
-        // or via a utility helper.
-        return process.env.STELLAR_HSM_PUBLIC_KEY!;
+        const pubKeyBuffer = Buffer.from(response.PublicKey);
+        if (pubKeyBuffer.length < 32) {
+            throw new Error(`KMS GetPublicKey returned invalid buffer length: ${pubKeyBuffer.length}`);
+        }
+        const rawPublicKey = pubKeyBuffer.subarray(pubKeyBuffer.length - 32);
+        const keypair = new Keypair({ type: 'ed25519', publicKey: rawPublicKey });
+        return keypair.publicKey();
     }
 
     /**
