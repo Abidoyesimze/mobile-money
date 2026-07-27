@@ -273,3 +273,97 @@ setInterval(loadSlaMetrics, 60000);
 
 const btnRefreshSla = document.getElementById("btn-refresh-sla");
 if (btnRefreshSla) btnRefreshSla.addEventListener("click", loadSlaMetrics);
+
+// Provider Failover Dashboard (#1550)
+async function toggleProvider(provider, currentlyEnabled) {
+  const token = window.prompt(
+    "Admin auth token required to change provider state:",
+  );
+  if (!token) return;
+
+  const reason = currentlyEnabled
+    ? window.prompt("Reason for disabling this provider (optional):", "") || undefined
+    : undefined;
+
+  try {
+    const res = await fetch(
+      `/api/admin/monitoring/provider-maintenance/${encodeURIComponent(provider)}/toggle`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ enabled: !currentlyEnabled, reason }),
+      },
+    );
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert(`Failed to toggle ${provider}: ${body.message || res.status}`);
+      return;
+    }
+
+    await loadProviderMaintenance();
+  } catch (err) {
+    alert(`Failed to toggle ${provider}: ${err.message || "network error"}`);
+  }
+}
+
+function renderProviderCard(p) {
+  const statusClass = p.enabled ? "failover-online" : "failover-offline";
+  const statusText = p.enabled ? "Online" : "Offline";
+  const reasonHtml =
+    !p.enabled && p.disabledReason
+      ? `<div class="failover-reason">Reason: ${p.disabledReason}</div>`
+      : "";
+
+  const card = document.createElement("div");
+  card.className = `failover-card glass ${statusClass}`;
+  card.innerHTML = `
+    <div class="failover-provider-name">${p.provider.toUpperCase()}</div>
+    <div class="failover-status">${statusText}</div>
+    ${reasonHtml}
+    <button class="btn-toggle-provider" data-provider="${p.provider}" data-enabled="${p.enabled}">
+      ${p.enabled ? "Take Offline" : "Bring Online"}
+    </button>
+  `;
+  card
+    .querySelector(".btn-toggle-provider")
+    .addEventListener("click", () => toggleProvider(p.provider, p.enabled));
+  return card;
+}
+
+async function loadProviderMaintenance() {
+  const grid = document.getElementById("failover-grid");
+  const updatedAt = document.getElementById("failover-updated-at");
+  if (!grid) return;
+
+  try {
+    const res = await fetch("/api/monitoring/provider-maintenance");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.success || !Array.isArray(data.providers)) {
+      throw new Error("Unexpected response");
+    }
+
+    grid.innerHTML = "";
+    if (data.providers.length === 0) {
+      grid.innerHTML = '<p class="failover-loading">No providers configured yet.</p>';
+    } else {
+      data.providers.forEach((p) => grid.appendChild(renderProviderCard(p)));
+    }
+
+    if (updatedAt) updatedAt.textContent = new Date().toLocaleTimeString();
+  } catch (err) {
+    grid.innerHTML = '<p class="failover-loading">Failed to load provider states.</p>';
+    if (updatedAt) updatedAt.textContent = "unavailable";
+  }
+}
+
+loadProviderMaintenance();
+setInterval(loadProviderMaintenance, 60000);
+
+const btnRefreshFailover = document.getElementById("btn-refresh-failover");
+if (btnRefreshFailover)
+  btnRefreshFailover.addEventListener("click", loadProviderMaintenance);

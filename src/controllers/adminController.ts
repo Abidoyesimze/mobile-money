@@ -11,6 +11,8 @@ import {
 import { createError } from "../middleware/errorHandler";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { pool } from "../config/database";
+import { providerSettingsService } from "../services/providerSettingsService";
+import { AuthRequest } from "../middleware/auth";
 
 // Ensure logs directory exists
 const LOGS_DIR = path.join(process.cwd(), "logs");
@@ -400,6 +402,94 @@ export const getSlaMetrics = async (_req: Request, res: Response): Promise<void>
 };
 
 /**
+ * Controller: List manual failover (enable/disable) state for every provider.
+ * Acceptance Criteria: Display current provider state indicators on screen (#1550).
+ */
+export const getProviderMaintenanceState = async (
+  _req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const settings = await providerSettingsService.getAllSettings();
+
+    res.json({
+      success: true,
+      providers: settings.map((s) => ({
+        provider: s.provider_name,
+        enabled: s.is_enabled ?? true,
+        disabledReason: s.disabled_reason ?? null,
+        disabledBy: s.disabled_by ?? null,
+        disabledAt: s.disabled_at ?? null,
+      })),
+    });
+  } catch (error) {
+    winstonOutageLogger.error("Failed to fetch provider maintenance state", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch provider maintenance state");
+  }
+};
+
+const isAdminRole = (role?: string) => role === "admin" || role === "super-admin";
+
+/**
+ * Controller: Manually toggle a provider offline/online for unscheduled maintenance.
+ * Acceptance Criteria: Expose administrative endpoints protecting toggle routes
+ * with permissions; save state selections to database config variables (#1550).
+ */
+export const toggleProviderMaintenanceHandler = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const user = (req as AuthRequest).user;
+    if (!user || !isAdminRole(user.role)) {
+      throw createError(ERROR_CODES.FORBIDDEN, "Admin access required", {
+        message: "Admin access required",
+      });
+    }
+
+    const { provider } = req.params;
+    const { enabled, reason } = req.body;
+
+    if (!provider || typeof provider !== "string") {
+      throw createError(ERROR_CODES.INVALID_INPUT, "Provider is required");
+    }
+    if (typeof enabled !== "boolean") {
+      throw createError(ERROR_CODES.INVALID_INPUT, "enabled (boolean) is required");
+    }
+
+    const updated = await providerSettingsService.setProviderEnabled(
+      provider,
+      enabled,
+      user.id,
+      reason ?? null,
+    );
+
+    winstonOutageLogger.info("PROVIDER_MAINTENANCE_TOGGLED", {
+      provider: updated.provider_name,
+      enabled: updated.is_enabled,
+      updatedBy: user.id,
+      reason: updated.disabled_reason,
+    });
+
+    res.json({
+      success: true,
+      message: `Provider ${provider} ${enabled ? "enabled" : "disabled"}`,
+      provider: {
+        provider: updated.provider_name,
+        enabled: updated.is_enabled ?? true,
+        disabledReason: updated.disabled_reason ?? null,
+        disabledBy: updated.disabled_by ?? null,
+        disabledAt: updated.disabled_at ?? null,
+      },
+    });
+  } catch (error) {
+    if ((error as any).status) throw error;
+    winstonOutageLogger.error("Failed to toggle provider maintenance state", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to toggle provider maintenance state");
+  }
+};
+
+/**
  * Express Router mounting all monitoring dashboard endpoints
  */
 import { Router } from "express";
@@ -416,5 +506,7 @@ router.get("/logs", getOutageLogs);
 router.post("/circuit-breaker/reset", resetCircuitBreakerHandler);
 router.post("/circuit-breaker/trip", tripCircuitBreakerHandler);
 router.get("/sla", getSlaMetrics);
+router.get("/provider-maintenance", getProviderMaintenanceState);
+router.post("/provider-maintenance/:provider/toggle", toggleProviderMaintenanceHandler);
 
 export default router;

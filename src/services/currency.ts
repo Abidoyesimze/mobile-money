@@ -404,3 +404,71 @@ export class CurrencyService {
 // ---------------------------------------------------------------------------
 
 export const currencyService = new CurrencyService();
+
+// ---------------------------------------------------------------------------
+// Airtel Money transaction fee calculation (#1552)
+// ---------------------------------------------------------------------------
+
+/** One band of Airtel's tiered transaction fee schedule. */
+export interface AirtelFeeTier {
+  /** Inclusive lower bound of the amount band, in the transaction's base currency. */
+  min: number;
+  /** Inclusive upper bound of the amount band (`null` = unbounded top tier). */
+  max: number | null;
+  /** Fee rate applied to amounts within this band, e.g. 0.01 = 1%. */
+  rate: number;
+  /** Human-readable tier label surfaced to clients. */
+  label: string;
+}
+
+/**
+ * Airtel Money's tiered transaction fee schedule.
+ * Higher transaction amounts are charged a lower percentage rate,
+ * mirroring Airtel's published tiered-pricing model.
+ */
+export const AIRTEL_FEE_TIERS: readonly AirtelFeeTier[] = [
+  { min: 0, max: 1000, rate: 0.01, label: "micro" },
+  { min: 1000, max: 10000, rate: 0.008, label: "standard" },
+  { min: 10000, max: 50000, rate: 0.005, label: "bulk" },
+  { min: 50000, max: null, rate: 0.003, label: "enterprise" },
+] as const;
+
+/** Minimum fee charged on any Airtel Money transaction, regardless of tier. */
+export const AIRTEL_MIN_FEE = 5;
+
+export interface AirtelFeeResult {
+  grossAmount: number;
+  fee: number;
+  netAmount: number;
+  tier: string;
+  rate: number;
+}
+
+/**
+ * Calculates the Airtel Money transaction fee for a given gross amount,
+ * using Airtel's tiered fee schedule (`AIRTEL_FEE_TIERS`).
+ *
+ * @throws {Error} if `amount` is not a finite, non-negative number.
+ */
+export function calculateAirtelFee(amount: number): AirtelFeeResult {
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error("Amount must be a finite, non-negative number");
+  }
+
+  const tier =
+    AIRTEL_FEE_TIERS.find(
+      (t) => amount >= t.min && (t.max === null || amount < t.max),
+    ) ?? AIRTEL_FEE_TIERS[AIRTEL_FEE_TIERS.length - 1];
+
+  const rawFee = amount * tier.rate;
+  const fee = Math.round(Math.max(rawFee, AIRTEL_MIN_FEE) * 100) / 100;
+  const netAmount = Math.round((amount - fee) * 100) / 100;
+
+  return {
+    grossAmount: amount,
+    fee,
+    netAmount,
+    tier: tier.label,
+    rate: tier.rate,
+  };
+}

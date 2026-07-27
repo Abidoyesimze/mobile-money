@@ -12,7 +12,12 @@
 
 import { Request, Response } from "express";
 import { z } from "zod";
-import { currencyService, SupportedCurrency } from "../services/currency";
+import {
+  currencyService,
+  SupportedCurrency,
+  calculateAirtelFee,
+  AIRTEL_FEE_TIERS,
+} from "../services/currency";
 import { dynamicSpreadService } from "../services/dynamicSpreadService";
 import logger from "../utils/logger";
 
@@ -44,6 +49,12 @@ const SpreadPreviewSchema = z.object({
   /** Optional overrides for testing */
   liquidityVolumeUsd: z.number().nonnegative().optional(),
   settlementTimeMs: z.number().nonnegative().optional(),
+});
+
+const AirtelFeeQuoteSchema = z.object({
+  amount: z
+    .number({ required_error: "amount is required" })
+    .nonnegative("amount must not be negative"),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -272,6 +283,56 @@ export class RateController {
         message: err instanceof Error ? err.message : "Unknown error",
       });
     }
+  };
+
+  /**
+   * POST /api/rates/airtel/fee
+   *
+   * Calculates the Airtel Money transaction fee and net amount for a given
+   * gross amount using Airtel's tiered fee schedule (#1552).
+   *
+   * Request body:
+   *   { amount: number }
+   *
+   * Response:
+   *   { success: true, data: { grossAmount, fee, netAmount, tier, rate } }
+   */
+  calculateAirtelFeeQuote = (req: Request, res: Response): void => {
+    const parsed = AirtelFeeQuoteSchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({
+        success: false,
+        error: "Validation error",
+        details: parsed.error.issues,
+      });
+      return;
+    }
+
+    try {
+      const data = calculateAirtelFee(parsed.data.amount);
+      res.json({ success: true, data });
+    } catch (err) {
+      logger.error(
+        { err, amount: parsed.data.amount },
+        "[RateController] Airtel fee calculation failed",
+      );
+      res.status(500).json({
+        success: false,
+        error: "Failed to calculate Airtel fee",
+        message: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  };
+
+  /**
+   * GET /api/rates/airtel/fee-tiers
+   *
+   * Lists Airtel Money's tiered fee schedule so clients can preview rates
+   * before submitting a transaction.
+   */
+  getAirtelFeeTiers = (_req: Request, res: Response): void => {
+    res.json({ success: true, data: { tiers: AIRTEL_FEE_TIERS } });
   };
 }
 
