@@ -1,3 +1,6 @@
+// Bootstrap vault secrets first
+import "./config/vault";
+
 import logger from "./utils/logger";
 // Initialize centralized configuration first
 import "./config/init";
