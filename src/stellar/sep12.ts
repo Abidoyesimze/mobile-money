@@ -5,6 +5,16 @@ import { sep12RateLimiter } from "../middleware/rateLimit";
 import { upload } from "../middleware/upload";
 import { z } from "zod";
 import KYCService, { KYCLevel, KYCStatus, DocumentType } from "../services/kyc";
+import { validateCountryCode } from "../utils/validators";
+
+// Zod refinement: accepts ISO 3166-1 alpha-2 OR alpha-3, validated against
+// the expanded country map from validators.ts (issue #1579)
+const isoCountryCode = z
+  .string()
+  .refine(
+    (val) => validateCountryCode(val).valid,
+    (val) => ({ message: `"${val}" is not a recognised ISO 3166-1 alpha-2 or alpha-3 country code` }),
+  );
 import { ERROR_CODES } from "../constants/errorCodes";
 import { createError } from "../middleware/errorHandler";
 import { UserModel } from "../models/users";
@@ -89,6 +99,53 @@ export interface Sep12CustomerResponse {
 // Validation Schemas
 // ============================================================================
 
+const PutCustomerSchema = z.object({
+  account: z.string().optional(),
+  memo: z.string().optional(),
+  memo_type: z.enum(["id", "hash", "text"]).optional(),
+  type: z.string().optional(),
+  
+  // Natural person fields
+  first_name: z.string().optional(),
+  last_name: z.string().optional(),
+  email_address: z.string().email().optional(),
+  mobile_number: z.string().optional(),
+  birth_date: z.string().optional(),
+  birth_place: z.string().optional(),
+  birth_country: z.string().optional(),
+  
+  // Address
+  address: z.string().optional(),
+  address_country_code: isoCountryCode.optional(),
+  state_or_province: z.string().optional(),
+  city: z.string().optional(),
+  postal_code: z.string().optional(),
+  
+  // ID document
+  id_type: z.string().optional(),
+  id_country_code: isoCountryCode.optional(),
+  id_issue_date: z.string().optional(),
+  id_expiration_date: z.string().optional(),
+  id_number: z.string().optional(),
+  
+  // Photos (base64 or URLs)
+  photo_id_front: z.string().optional(),
+  photo_id_back: z.string().optional(),
+  photo_proof_residence: z.string().optional(),
+  
+  // Organization
+  organization_name: z.string().optional(),
+  organization_registration_number: z.string().optional(),
+  organization_registration_date: z.string().optional(),
+  organization_registered_address: z.string().optional(),
+  
+  // Additional
+  tax_id: z.string().optional(),
+  tax_id_name: z.string().optional(),
+  occupation: z.string().optional(),
+  employer_name: z.string().optional(),
+  employer_address: z.string().optional(),
+}).catchall(z.any()); // Catch all unmapped dynamic fields
 const PutCustomerSchema = z
   .object({
     account: z.string().optional(),

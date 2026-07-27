@@ -209,6 +209,8 @@ export function createFileSignerFromEnv(): KmsFileSigner | null {
 
 // ─── Stellar HSM (unchanged below) ───────────────────────────────────────────
 
+import { getKmsClient } from "../../config/aws";
+
 /**
  * Interface for HSM Providers to ensure secrets never touch app memory
  */
@@ -224,6 +226,28 @@ export class KmsStellarSigner implements StellarHSMProvider {
   private client: KMSClient;
   private keyId: string;
 
+    constructor(region: string, keyId: string) {
+        this.client = getKmsClient();
+        this.keyId = keyId;
+    }
+
+    /**
+     * Fetches the public key from HSM and converts it to Stellar format (G...)
+     */
+    async getPublicKey(): Promise<string> {
+        const command = new GetPublicKeyCommand({ KeyId: this.keyId });
+        const response = await this.client.send(command);
+
+        if (!response.PublicKey) throw new Error("Could not retrieve Public Key from HSM");
+
+        const pubKeyBuffer = Buffer.from(response.PublicKey);
+        if (pubKeyBuffer.length < 32) {
+            throw new Error(`KMS GetPublicKey returned invalid buffer length: ${pubKeyBuffer.length}`);
+        }
+        const rawPublicKey = pubKeyBuffer.subarray(pubKeyBuffer.length - 32);
+        const keypair = new Keypair({ type: 'ed25519', publicKey: rawPublicKey });
+        return keypair.publicKey();
+    }
   constructor(region: string, keyId: string) {
     this.client = new KMSClient({ region });
     this.keyId = keyId;

@@ -47,11 +47,15 @@ import {
   ComplianceDocumentUpdateInput,
 } from "../models/complianceDocument";
 import { providerSettingsService } from "../services/providerSettingsService";
+import { ProviderConfigCacheInvalidation } from "../services/cacheAside";
 import { resetCircuitBreakerForProvider } from "../utils/circuitBreaker";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { createError } from "../middleware/errorHandler";
 
+import adminControllerRouter from "../controllers/adminController";
+
 const router = Router();
+router.use("/monitoring", adminControllerRouter);
 const IMPERSONATION_TOKEN_EXPIRES_IN = "15m";
 const IMPERSONATION_TOKEN_TTL_MS = 15 * 60 * 1000;
 const READ_ONLY_IMPERSONATION_MESSAGE = "Read-only mode active";
@@ -3000,9 +3004,20 @@ router.put(
         fallback_order || null,
       );
 
+      // 1. Reset the circuit breaker so the new settings take effect immediately.
       resetCircuitBreakerForProvider(providerName);
 
-      res.json({ message: "Provider settings updated successfully", settings });
+      // 2. Invalidate all caches that reference this provider's config across
+      //    every cluster instance (L1 + Redis L2 + Pub/Sub broadcast).
+      await ProviderConfigCacheInvalidation.invalidateOnConfigModification(
+        providerName,
+      );
+
+      res.json({
+        message: "Provider settings updated successfully",
+        settings,
+        invalidatedAt: new Date().toISOString(),
+      });
     } catch (error) {
       logger.error("Error updating provider settings:", error);
       res.status(500).json({ message: "Failed to update provider settings" });
@@ -3257,6 +3272,61 @@ router.get(
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
         "Failed to fetch queue stats",
+      );
+    }
+  },
+);
+
+import { reconcilePendingTransactions } from "../services/providers/mtnMomo";
+
+// POST /api/admin/transactions/reconcile
+router.post(
+  "/transactions/reconcile",
+  requireAdmin,
+  logAdminAction("RECONCILE_TRANSACTIONS"),
+  async (req: Request, res: Response) => {
+    try {
+      const dryRun = req.body?.dryRun === true;
+
+      if (dryRun) {
+        // Dry-run: fetch pending list without writing any updates.
+        const { queryRead } = await import("../config/database.js");
+        const result = await queryRead(
+          `SELECT
+             id,
+             reference_number   AS "referenceNumber",
+             provider_reference AS "providerReference",
+             amount::text       AS amount,
+             status,
+             created_at         AS "createdAt"
+           FROM transactions
+           WHERE status = $1
+             AND provider ILIKE 'mtn%'
+           ORDER BY created_at ASC`,
+          [TransactionStatus.Pending],
+        );
+
+        return res.json({
+          total: result.rows.length,
+          updated: 0,
+          results: result.rows.map((r: any) => ({
+            id: r.id,
+            referenceNumber: r.referenceNumber,
+            previousStatus: r.status,
+            newStatus: null,
+            updated: false,
+            providerStatus: "not_queried",
+          })),
+        });
+      }
+
+      const report = await reconcilePendingTransactions();
+      return res.json(report);
+    } catch (err) {
+      logger.error({ err }, "Error running transaction reconciliation");
+      throw createError(
+        ERROR_CODES.INTERNAL_ERROR,
+        "Reconciliation failed",
       );
     }
   },

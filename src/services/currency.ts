@@ -4,6 +4,11 @@ import {
   exchangeRateBufferService,
   BufferedRate,
 } from "./exchangeRateBufferService";
+import {
+  dynamicSpreadService,
+  SpreadInputs,
+  SpreadResult,
+} from "./dynamicSpreadService";
 
 // ---------------------------------------------------------------------------
 // Supported currencies
@@ -18,6 +23,8 @@ export const SUPPORTED_CURRENCIES = [
   "TZS",
   "ZMW",
   "RWF",
+  "GNF",
+  "MGA",
 ] as const;
 
 export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
@@ -74,6 +81,8 @@ const FALLBACK_RATES: ExchangeRates = {
   TZS: 2600, // Tanzanian Shilling
   ZMW: 27, // Zambian Kwacha
   RWF: 1320, // Rwandan Franc
+  GNF: 8500, // Guinean Franc
+  MGA: 4500, // Malagasy Ariary
 };
 
 // ---------------------------------------------------------------------------
@@ -215,6 +224,87 @@ export class CurrencyService {
       BASE_CURRENCY,
       provider,
       direction,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Dynamic-spread conversion (issue #1631)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Convert `amount` from `from` to `to` currency applying a **dynamic spread**
+   * that is scaled by:
+   *   - Liquidity depth   (30-day ledger payout volume for the provider)
+   *   - Settlement time   (provider_settings.timeout_ms for the provider)
+   *
+   * Use this instead of `convertWithBuffer` when you want the platform to
+   * automatically price wider spreads in illiquid or slow-settling markets.
+   *
+   * @param amount    Amount in the source currency
+   * @param from      Source currency
+   * @param to        Target currency
+   * @param provider  Mobile money provider slug (e.g. 'mtn', 'airtel')
+   * @param direction 'sell' = user sells `from` (platform buys, spread narrows rate)
+   *                  'buy'  = user buys `from`  (platform sells, spread widens rate)
+   * @param spreadOverrides  Optional overrides for liquidity / settlement inputs
+   *                         (useful for testing and manual quote previews)
+   */
+  async convertWithDynamicSpread(
+    amount: number,
+    from: SupportedCurrency,
+    to: SupportedCurrency,
+    provider: string,
+    direction: "sell" | "buy" = "sell",
+    spreadOverrides?: Pick<SpreadInputs, "liquidityVolumeUsd" | "settlementTimeMs">,
+  ): Promise<ConversionResult & { spread: SpreadResult }> {
+    if (amount < 0) throw new Error("Amount must be non-negative");
+
+    const rawResult = this.convert(amount, from, to);
+
+    const spreadInputs: SpreadInputs = {
+      provider,
+      fromCurrency: from,
+      toCurrency: to,
+      ...spreadOverrides,
+    };
+
+    const spread = await dynamicSpreadService.calculateSpread(
+      rawResult.rate,
+      spreadInputs,
+      direction,
+    );
+
+    // Recompute converted amount using the spread-adjusted rate
+    const adjustedConvertedAmount = amount * spread.adjustedRate;
+
+    return {
+      originalAmount: amount,
+      originalCurrency: from,
+      convertedAmount: Math.round(adjustedConvertedAmount * 1e7) / 1e7,
+      baseCurrency: to,
+      rate: spread.adjustedRate,
+      spread,
+    };
+  }
+
+  /**
+   * Convenience: convert any supported currency to the base currency (USD)
+   * using the dynamic spread algorithm.
+   */
+  async convertToBaseWithDynamicSpread(
+    amount: number,
+    currency: SupportedCurrency,
+    provider: string,
+    direction: "sell" | "buy" = "sell",
+    spreadOverrides?: Pick<SpreadInputs, "liquidityVolumeUsd" | "settlementTimeMs">,
+  ): Promise<ConversionResult & { spread: SpreadResult }> {
+    return this.convertWithDynamicSpread(
+      amount,
+      currency,
+      BASE_CURRENCY,
+      provider,
+      direction,
+      spreadOverrides,
     );
   }
 

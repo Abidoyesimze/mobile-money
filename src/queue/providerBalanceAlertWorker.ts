@@ -1,7 +1,10 @@
 import logger from "../utils/logger";
 import { Job, Worker } from "bullmq";
 import { runProviderBalanceAlertJob } from "../jobs/balances";
-import { queueOptions } from "./config";
+import {
+  queueOptions,
+  getProviderBalanceAlertWorkerConcurrency,
+} from "./config";
 import {
   PROVIDER_BALANCE_ALERT_JOB_NAME,
   PROVIDER_BALANCE_ALERT_QUEUE_NAME,
@@ -30,7 +33,7 @@ export function startProviderBalanceAlertWorker(): void {
     },
     {
       ...queueOptions,
-      concurrency: 1,
+      concurrency: getProviderBalanceAlertWorkerConcurrency(),
     },
   );
 

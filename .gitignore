@@ -4,6 +4,7 @@ node_modules/
 # Build outputs
 dist/
 contracts/target/
+benchmarks/target/
 *.tsbuildinfo
 .docusaurus/
 
@@ -37,7 +38,9 @@ pact.log
 # Kiro
 .kiro/
 
-
+# Playwright
+playwright-report/
+test-results/
 
 # Load test output
 tests/load/results/*.json

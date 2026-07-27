@@ -508,9 +508,7 @@ export class MultisigCustodyLedgerService {
   /**
    * Get request by ID
    */
-  private async getRequestById(
-    requestId: string,
-  ): Promise<MultisigRequest | null> {
+  async getRequestById(requestId: string): Promise<MultisigRequest | null> {
     const query = `SELECT * FROM multisig_requests WHERE id = $1`;
     const result = await pool.query(query, [requestId]);
     return result.rows[0] || null;

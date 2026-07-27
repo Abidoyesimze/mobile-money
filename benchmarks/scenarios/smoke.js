@@ -13,6 +13,14 @@ import { check, sleep } from "k6";
 import { Rate } from "k6/metrics";
 
 const TARGET_URL = __ENV.TARGET_URL || "http://localhost:3001";
+const errorRate  = new Rate("smoke_error_rate");
+
+export const options = {
+  vus:      5,
+  duration: "1m",
+  thresholds: {
+    http_req_duration:  ["p(95)<300"],
+    smoke_error_rate:   ["rate<0.01"],
 const errorRate = new Rate("smoke_error_rate");
 
 export const options = {
@@ -27,6 +35,12 @@ export const options = {
 function makePayload() {
   return JSON.stringify({
     event_type: "payment.callback",
+    provider:   "mtn",
+    reference:  `SMOKE-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    amount:     1000.00,
+    currency:   "XAF",
+    status:     "success",
+    timestamp:  new Date().toISOString(),
     provider: "mtn",
     reference: `SMOKE-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     amount: 1000.0,
@@ -44,6 +58,8 @@ export default function () {
   });
 
   const ok = check(res, {
+    "status 202":      (r) => r.status === 202,
+    "has reference":   (r) => { try { return r.json("reference") !== undefined; } catch { return false; } },
     "status 202": (r) => r.status === 202,
     "has reference": (r) => {
       try {
@@ -61,6 +77,7 @@ export default function () {
 
 export function handleSummary(data) {
   const pass = (data.metrics.smoke_error_rate?.values?.rate ?? 0) < 0.01;
+  console.log(`\n  Smoke test: ${pass ? "✓ PASSED — safe to run peak-day spike" : "✗ FAILED — fix issues before load testing"}\n`);
   console.log(
     `\n  Smoke test: ${pass ? "✓ PASSED — safe to run peak-day spike" : "✗ FAILED — fix issues before load testing"}\n`,
   );

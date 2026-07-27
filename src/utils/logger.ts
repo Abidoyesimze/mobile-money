@@ -66,6 +66,30 @@ const PII_MASTER_KEY_FIELDS = [
   "DB_ENCRYPTION_KEY",
 ];
 
+/** User PII parameter field names to redact in logs */
+export const PII_USER_FIELDS = [
+  "email",
+  "e_mail",
+  "user_email",
+  "userEmail",
+  "phone",
+  "phoneNumber",
+  "phone_number",
+  "mobile",
+  "msisdn",
+  "telephone",
+  "first_name",
+  "firstName",
+  "last_name",
+  "lastName",
+  "display_name",
+  "displayName",
+  "full_name",
+  "fullName",
+  "user_name",
+  "userName",
+];
+
 type ScrubFilter = { pattern: RegExp; replacement: string };
 
 function buildJsonKeyValueScrubFilters(keys: string[]): ScrubFilter[] {
@@ -88,7 +112,11 @@ function buildJsonKeyValueScrubFilters(keys: string[]): ScrubFilter[] {
 }
 
 const PII_SCRUB_REGEX_FILTERS: ScrubFilter[] = [
-  ...buildJsonKeyValueScrubFilters([...REDACT_KEYS, ...PII_MASTER_KEY_FIELDS]),
+  ...buildJsonKeyValueScrubFilters([
+    ...REDACT_KEYS,
+    ...PII_MASTER_KEY_FIELDS,
+    ...PII_USER_FIELDS,
+  ]),
   // Bearer tokens embedded in message strings
   {
     pattern: /Bearer\s+[A-Za-z0-9\-._~+/]+=*/g,
@@ -99,12 +127,53 @@ const PII_SCRUB_REGEX_FILTERS: ScrubFilter[] = [
     pattern: /\bS[A-Z2-7]{55}\b/g,
     replacement: SCRUB_CENSOR,
   },
+  // Standalone email addresses
+  {
+    pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Standalone international phone numbers (E.164: + followed by 8-15 digits)
+  {
+    pattern: /\+1?\d{9,14}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // JWT tokens anywhere in text (three base64url segments separated by dots)
+  {
+    pattern: /\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Hex-encoded private keys (64+ consecutive hex chars — likely 256-bit keys)
+  {
+    pattern: /\b[a-fA-F0-9]{64,}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Base64-encoded secrets (40+ base64 chars — likely encrypted payloads)
+  {
+    pattern: /\b[A-Za-z0-9+/]{40,}={0,2}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Stellar public addresses (G… 56 chars) — redact from logs to prevent
+  // address correlation via log aggregation
+  {
+    pattern: /\bG[A-Z2-7]{55}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Stellar transaction hash or hex identifiers (64 hex chars)
+  {
+    pattern: /\b[a-f0-9]{64}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Stellar base64 transaction envelope XDR (long base64 with +/=)
+  {
+    pattern: /\bAAAA[A-Za-z0-9+/=]{100,}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
 ];
 
 const PII_KEY_VALUE_PATTERN =
-  /\b(master[_-]?key|pii[_-]?master[_-]?key|db[_-]?encryption[_-]?key)\s*[=:]\s*['"]?[^\s'",}]+['"]?/gi;
+  /\b(master[_-]?key|pii[_-]?master[_-]?key|db[_-]?encryption[_-]?key|email|user[_-]?email|phone[_-]?number|phone|msisdn|mobile|first[_-]?name|last[_-]?name|display[_-]?name|full[_-]?name|user[_-]?name)\s*[=:]\s*['"]?[^\s'",}]+['"]?/gi;
 
-function scrubLogOutput(chunk: string): string {
+export function scrubLogOutput(chunk: string): string {
   let result = chunk.replace(
     PII_KEY_VALUE_PATTERN,
     (match, key: string) => `${key}=${SCRUB_CENSOR}`,
@@ -115,6 +184,26 @@ function scrubLogOutput(chunk: string): string {
     result = result.replace(pattern, replacement);
   }
   return result;
+}
+
+/** Express middleware for sanitizing PII in request payloads and parameters */
+export function logSanitizerMiddleware(req: any, res: any, next: any): void {
+  if (req.body && typeof req.body === "object") {
+    try {
+      req.body = JSON.parse(scrubLogOutput(JSON.stringify(req.body)));
+    } catch {}
+  }
+  if (req.query && typeof req.query === "object") {
+    try {
+      req.query = JSON.parse(scrubLogOutput(JSON.stringify(req.query)));
+    } catch {}
+  }
+  if (req.params && typeof req.params === "object") {
+    try {
+      req.params = JSON.parse(scrubLogOutput(JSON.stringify(req.params)));
+    } catch {}
+  }
+  if (typeof next === "function") next();
 }
 
 /** Wrap any pino destination so regex scrubbing runs before the transport prints. */
@@ -260,12 +349,16 @@ const logger: Logger = pino(
       paths: [
         ...REDACT_KEYS,
         ...PII_MASTER_KEY_FIELDS,
+        ...PII_USER_FIELDS,
         ...REDACT_KEYS.map((key) => `*.${key}`),
         ...PII_MASTER_KEY_FIELDS.map((key) => `*.${key}`),
+        ...PII_USER_FIELDS.map((key) => `*.${key}`),
         ...REDACT_KEYS.map((key) => `req.headers.${key}`),
         ...REDACT_KEYS.map((key) => `*.req.headers.${key}`),
         ...PII_MASTER_KEY_FIELDS.map((key) => `req.headers.${key}`),
         ...PII_MASTER_KEY_FIELDS.map((key) => `*.req.headers.${key}`),
+        ...PII_USER_FIELDS.map((key) => `req.headers.${key}`),
+        ...PII_USER_FIELDS.map((key) => `*.req.headers.${key}`),
       ],
       censor: SCRUB_CENSOR,
     },

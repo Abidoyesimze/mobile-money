@@ -334,10 +334,10 @@ export const configSchema = convict({
       default: 60000, // 1 minute
     },
     requestTimeoutMs: {
-      doc: "Orange API request timeout in milliseconds",
-      format: "nat",
+      doc: 'Orange API request timeout in milliseconds',
+      format: 'nat',
       default: 30000,
-      env: "ORANGE_REQUEST_TIMEOUT_MS",
+      env: 'ORANGE_REQUEST_TIMEOUT_MS',
     },
   },
 
@@ -420,25 +420,47 @@ export const configSchema = convict({
     },
   },
 
+  // SMS Failover Settings
+  sms: {
+    primaryProvider: {
+      doc: "Primary SMS provider (e.g. twilio, africastalking, infobip)",
+      format: String,
+      default: "twilio",
+      env: "SMS_PROVIDER",
+    },
+    secondaryProvider: {
+      doc: "Secondary/fallback SMS provider",
+      format: String,
+      default: "africastalking",
+      env: "SMS_PROVIDER_SECONDARY",
+    },
+    timeoutMs: {
+      doc: "Timeout in milliseconds before failing over to secondary provider",
+      format: "nat",
+      default: 5000,
+      env: "SMS_TIMEOUT_MS",
+    },
+  },
+
   // Response compression
   compression: {
     enabled: {
-      doc: "Enable HTTP response compression",
+      doc: 'Enable HTTP response compression',
       format: Boolean,
       default: true,
-      env: "COMPRESSION_ENABLED",
+      env: 'COMPRESSION_ENABLED',
     },
     threshold: {
-      doc: "Minimum response size in bytes to trigger compression",
-      format: "nat",
+      doc: 'Minimum response size in bytes to trigger compression',
+      format: 'nat',
       default: 1024,
-      env: "COMPRESSION_THRESHOLD",
+      env: 'COMPRESSION_THRESHOLD',
     },
     level: {
-      doc: "Gzip compression level (0-9) used by zlib",
-      format: "nat",
+      doc: 'Gzip compression level (0-9) used by zlib',
+      format: 'nat',
       default: 6,
-      env: "COMPRESSION_LEVEL",
+      env: 'COMPRESSION_LEVEL',
     },
   },
 });
@@ -484,3 +506,43 @@ export function getConfigValue(key: string): any {
 }
 
 export default configSchema;
+// Cross-origin request settings
+cors: {// Worker Concurrency Configuration
+worker: {
+  concurrency: {
+    doc: "Transaction processing worker concurrency limit",
+    format: "nat",
+    default: 50,
+    env: "TRANSACTION_WORKER_CONCURRENCY",
+  },
+  syncConcurrency: {
+    doc: "Accounting sync worker concurrency limit",
+    format: "nat",
+    default: 20,
+    env: "SYNC_WORKER_CONCURRENCY",
+  },
+  webhookRetryConcurrency: {
+    doc: "Webhook retry worker concurrency limit",
+    format: "nat",
+    default: 10,
+    env: "WEBHOOK_RETRY_WORKER_CONCURRENCY",
+  },
+  accountingRetryConcurrency: {
+    doc: "Accounting retry worker concurrency limit",
+    format: "nat",
+    default: 5,
+    env: "ACCOUNTING_RETRY_WORKER_CONCURRENCY",
+  },
+  accountingTokenRefreshConcurrency: {
+    doc: "Accounting token refresh worker concurrency limit",
+    format: "nat",
+    default: 3,
+    env: "ACCOUNTING_TOKEN_REFRESH_WORKER_CONCURRENCY",
+  },
+  providerBalanceAlertConcurrency: {
+    doc: "Provider balance alert worker concurrency limit (default 1 – sequential to prevent duplicate alerts)",
+    format: "nat",
+    default: 1,
+    env: "PROVIDER_BALANCE_ALERT_WORKER_CONCURRENCY",
+  },
+},

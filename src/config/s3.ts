@@ -1,4 +1,5 @@
-import { S3Client } from "@aws-sdk/client-s3";
+import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -53,4 +54,21 @@ export const getS3Client = (): S3Client => {
  */
 export const getS3ObjectUrl = (key: string): string => {
   return `https://${s3Config.bucket}.s3.${s3Config.region}.amazonaws.com/${key}`;
+};
+
+/**
+ * Generate a presigned URL for reading an S3 object.
+ *
+ * The URL expires after `expiresIn` seconds (default 900 = 15 minutes).
+ * Use this instead of direct S3 URLs to enforce time-limited access.
+ */
+export const getSignedObjectUrl = async (
+  key: string,
+  expiresIn = 900,
+): Promise<string> => {
+  const command = new GetObjectCommand({
+    Bucket: s3Config.bucket,
+    Key: key,
+  });
+  return getSignedUrl(getS3Client(), command, { expiresIn });
 };

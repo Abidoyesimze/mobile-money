@@ -137,6 +137,35 @@ export async function getQueueMetrics() {
   }
 }
 
+export interface ReconcileResult {
+  id: string;
+  referenceNumber: string;
+  previousStatus: string;
+  newStatus: string | null;
+  updated: boolean;
+  providerStatus: string;
+}
+
+export interface ReconcileResponse {
+  total: number;
+  updated: number;
+  results: ReconcileResult[];
+}
+
+export async function triggerReconcile(
+  dryRun = false,
+): Promise<ReconcileResponse> {
+  try {
+    const { data } = await buildClient().post<ReconcileResponse>(
+      "/api/admin/transactions/reconcile",
+      { dryRun },
+    );
+    return data;
+  } catch (err) {
+    throw new Error(extractMessage(err));
+  }
+}
+
 export async function releaseEscrow(
   escrowId: string,
   signatures: { signerIndex: number; key: string }[],

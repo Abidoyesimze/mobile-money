@@ -1,7 +1,16 @@
 import logger from "./logger";
 import bcrypt from "bcrypt";
 
-const rounds = Number(process.env.BCRYPT_ROUNDS) || 10;
+const DEFAULT_BCRYPT_ROUNDS = 12;
+const MIN_BCRYPT_ROUNDS = 12;
+
+export function getBcryptRounds(): number {
+  const envRounds = Number(process.env.BCRYPT_ROUNDS);
+  if (!isNaN(envRounds) && envRounds >= MIN_BCRYPT_ROUNDS) {
+    return envRounds;
+  }
+  return DEFAULT_BCRYPT_ROUNDS;
+}
 
 /**
  * Hash a plain text password
@@ -10,6 +19,7 @@ const rounds = Number(process.env.BCRYPT_ROUNDS) || 10;
  */
 export async function hashPassword(password: string): Promise<string> {
   try {
+    const rounds = getBcryptRounds();
     const hash = await bcrypt.hash(password, rounds);
     return hash;
   } catch (error) {

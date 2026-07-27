@@ -1,5 +1,5 @@
 import { Worker, Job } from "bullmq";
-import { queueOptions } from "./config";
+import { queueOptions, getAccountingRetryWorkerConcurrency } from "./config";
 import {
   AccountingRetryJobData,
   AccountingRetryJobResult,
@@ -149,7 +149,7 @@ export const accountingRetryWorker = new Worker<
   AccountingRetryJobResult
 >(ACCOUNTING_RETRY_QUEUE_NAME, processAccountingRetryJob, {
   ...queueOptions,
-  concurrency: 2, // Conservative concurrency for retry queue
+  concurrency: getAccountingRetryWorkerConcurrency(),
 });
 
 // Event listeners for monitoring
