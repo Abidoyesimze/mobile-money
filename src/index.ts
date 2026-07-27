@@ -97,8 +97,8 @@ import exchangeRateBufferRoutes from "./routes/exchangeRateBuffers";
 import adminAssetRoutes from "./routes/admin/assets";
 import settingsRoutes from "./routes/settings";
 import { statementsRoutes } from "./routes/statements";
-import { paymentLinkRoutes } from "./routes/paymentLinkRoutes.js";
-import { SEP24_INTERACTIVE_HTML } from "./services/sep24InteractivePage.js";
+import { paymentLinkRoutes } from "./routes/paymentLinkRoutes";
+import { SEP24_INTERACTIVE_HTML } from "./services/sep24InteractivePage";
 import providerStatusRouter from "./routes/providerStatus";
 import adminControllerRouter from "./controllers/adminController";
 import {
