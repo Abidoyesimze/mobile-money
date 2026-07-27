@@ -128,6 +128,26 @@ export class KYCController {
       // Store applicant reference with user
       await this.storeApplicantReference(userId, applicant.id);
 
+      // Issue #1649: Screen applicant against PEP database
+      try {
+        const pepService = getPepCheckService();
+        await pepService.ensureSeeded();
+        const pepResult = await pepService.screenCustomer(
+          validatedData.first_name,
+          validatedData.last_name,
+          validatedData.address?.country,
+        );
+        if (pepResult.matched) {
+          logger.warn(
+            { userId, firstName: validatedData.first_name, lastName: validatedData.last_name },
+            "[PEP] Applicant matched PEP database — flagging for review",
+          );
+          await pepService.flagForReview(userId, pepResult);
+        }
+      } catch (pepErr) {
+        logger.error({ err: pepErr, userId }, "[PEP] Screening error — continuing without PEP check");
+      }
+
       // Save sensitive fields in users table in encrypted form
       await this.userModel.updateSensitiveData(userId, {
         firstName: validatedData.first_name,

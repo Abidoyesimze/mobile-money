@@ -55,6 +55,54 @@ const REPLICA_CONNECTION_TIMEOUT_MS = parseInt(
   10,
 );
 
+/* ── Pool sizing configuration (#1652) ───────────────────────────── */
+
+/** Base number of connections in the pool (idle baseline). */
+const POOL_MIN = parseInt(process.env.DB_POOL_MIN || "10", 10);
+
+/** Maximum connections the pool can scale up to during surges. */
+const POOL_MAX = parseInt(process.env.DB_POOL_MAX || "100", 10);
+
+/** Default for when no dynamic max is set. */
+const POOL_DEFAULT_MAX = Math.min(
+  parseInt(process.env.DB_POOL_DEFAULT_MAX || "25", 10),
+  POOL_MAX,
+);
+
+/** Utilization ratio above which the pool grows (0.0–1.0). */
+const POOL_SCALE_UP_THRESHOLD = parseFloat(
+  process.env.DB_POOL_SCALE_UP_THRESHOLD || "0.7",
+);
+
+/** Utilization ratio below which the pool shrinks (0.0–1.0). */
+const POOL_SCALE_DOWN_THRESHOLD = parseFloat(
+  process.env.DB_POOL_SCALE_DOWN_THRESHOLD || "0.3",
+);
+
+/** Cooldown between pool resize operations (ms). */
+const POOL_RESIZE_COOLDOWN_MS = parseInt(
+  process.env.DB_POOL_RESIZE_COOLDOWN_MS || "30000",
+  10,
+);
+
+/** Database connection limit (from PostgreSQL config). Used to prevent
+ *  the pool from exceeding the database's max_connections. */
+const DB_MAX_CONNECTIONS = parseInt(
+  process.env.DB_MAX_CONNECTIONS || "200",
+  10,
+);
+
+/** Monitor interval for checking pool utilization (ms). */
+const POOL_MONITOR_INTERVAL_MS = parseInt(
+  process.env.DB_POOL_MONITOR_INTERVAL_MS || "15000",
+  10,
+);
+
+/** Active pool size tracking for dynamic resizing. */
+let currentPoolMax = POOL_DEFAULT_MAX;
+let lastResizeTime = 0;
+let resizeInProgress = false;
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -414,7 +462,14 @@ function createPrimaryPool(): Pool {
     schedulePrimaryPoolReconnect(err);
   });
 
+  currentPoolMax = POOL_DEFAULT_MAX;
   attachPrimaryPoolRecovery(newPool);
+
+  // Start pool monitor for dynamic sizing during surges (#1652)
+  if (process.env.NODE_ENV !== "test") {
+    startPoolMonitor(newPool);
+  }
+
   return newPool;
 }
 
