@@ -175,6 +175,11 @@ jest.mock("../src/config/redis", () => ({
     connect: jest.fn(),
     quit: jest.fn(),
     disconnect: jest.fn(),
+    get: jest.fn(),
+    setEx: jest.fn(),
+    del: jest.fn(),
   },
+  createRedisStore: jest.fn().mockReturnValue({ on: jest.fn(), get: jest.fn((sid, cb) => cb && cb(null, null)), set: jest.fn((sid, session, cb) => cb && cb(null)), destroy: jest.fn((sid, cb) => cb && cb(null)) }),
+  SESSION_TTL_SECONDS: 86400,
   SESSION_TTL_SECONDS: 86400,
 }));

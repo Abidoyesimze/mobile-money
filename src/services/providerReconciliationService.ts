@@ -23,8 +23,15 @@
  */
 
 import { Pool } from "pg";
-import { pool } from "../config/database";
+import { pool, queryRead, queryWrite } from "../config/database";
 import { ledgerService, LedgerService } from "./ledgerService";
+import {
+  parseCSV,
+  reconcileTransactions,
+  ProviderCSVRow,
+} from "./csvReconciliation";
+import logger from "../utils/logger";
+import axios from "axios";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -68,6 +75,59 @@ export interface SettlementSummary {
   totalTransactionsProcessed: number;
   issues: string[];
   completedAt: Date;
+}
+
+export interface ProviderReportConfig {
+  id: string;
+  provider: string;
+  is_enabled: boolean;
+  download_method: "api" | "manual"; // Simplified for now
+  api_endpoint?: string;
+  api_key?: string;
+  api_secret?: string;
+  report_timezone?: string;
+  report_time_format?: string;
+}
+
+export interface ReconciliationRun {
+  id: string;
+  provider: string;
+  report_date: string;
+  status: "running" | "completed" | "failed";
+  total_provider_rows: number;
+  total_db_records: number;
+  matched_count: number;
+  discrepancies_count: number;
+  orphaned_provider_count: number;
+  orphaned_db_count: number;
+  match_rate: number;
+  report_file_path?: string;
+  error_message?: string;
+  started_at: string;
+  completed_at?: string;
+}
+
+export interface ReconciliationAlert {
+  id: string;
+  reconciliation_run_id: string;
+  transaction_id?: string;
+  alert_type:
+    | "amount_mismatch"
+    | "status_mismatch"
+    | "orphaned_provider"
+    | "orphaned_db";
+  severity: "low" | "medium" | "high" | "critical";
+  status: "pending_review" | "reviewed" | "dismissed" | "resolved";
+  reference_number?: string;
+  expected_amount?: number;
+  actual_amount?: number;
+  expected_status?: string;
+  actual_status?: string;
+  provider_data?: any;
+  db_data?: any;
+  review_notes?: string;
+  reviewed_by?: string;
+  reviewed_at?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -525,80 +585,8 @@ export class ProviderReconciliationService {
   private toDateString(date: Date): string {
     return date.toISOString().split("T")[0];
   }
-}
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function toErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-// ─── Singleton export ────────────────────────────────────────────────────────
-
-export const providerReconciliationService = new ProviderReconciliationService();
-import { queryRead, queryWrite } from "../config/database";
-import {
-  parseCSV,
-  reconcileTransactions,
-  ProviderCSVRow,
-} from "./csvReconciliation";
-import logger from "../utils/logger";
-import axios from "axios";
-
-export interface ProviderReportConfig {
-  id: string;
-  provider: string;
-  is_enabled: boolean;
-  download_method: "api" | "manual"; // Simplified for now
-  api_endpoint?: string;
-  api_key?: string;
-  api_secret?: string;
-  report_timezone?: string;
-  report_time_format?: string;
-}
-
-export interface ReconciliationRun {
-  id: string;
-  provider: string;
-  report_date: string;
-  status: "running" | "completed" | "failed";
-  total_provider_rows: number;
-  total_db_records: number;
-  matched_count: number;
-  discrepancies_count: number;
-  orphaned_provider_count: number;
-  orphaned_db_count: number;
-  match_rate: number;
-  report_file_path?: string;
-  error_message?: string;
-  started_at: string;
-  completed_at?: string;
-}
-
-export interface ReconciliationAlert {
-  id: string;
-  reconciliation_run_id: string;
-  transaction_id?: string;
-  alert_type:
-    | "amount_mismatch"
-    | "status_mismatch"
-    | "orphaned_provider"
-    | "orphaned_db";
-  severity: "low" | "medium" | "high" | "critical";
-  status: "pending_review" | "reviewed" | "dismissed" | "resolved";
-  reference_number?: string;
-  expected_amount?: number;
-  actual_amount?: number;
-  expected_status?: string;
-  actual_status?: string;
-  provider_data?: any;
-  db_data?: any;
-  review_notes?: string;
-  reviewed_by?: string;
-  reviewed_at?: string;
-}
-
-export class ProviderReconciliationService {
+  // ─── CSV Provider Reconciliation Methods ──────────────────────────────────────
   // S3 client removed for simplicity - can be added back later
 
   /**
@@ -951,3 +939,13 @@ export class ProviderReconciliationService {
     return result.rows;
   }
 }
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function toErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// ─── Singleton export ────────────────────────────────────────────────────────
+
+export const providerReconciliationService = new ProviderReconciliationService();

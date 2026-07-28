@@ -10,6 +10,9 @@ import {
 } from "../utils/circuitBreaker";
 import { createError } from "../middleware/errorHandler";
 import { ERROR_CODES } from "../constants/errorCodes";
+import { pool } from "../config/database";
+import { providerSettingsService } from "../services/providerSettingsService";
+import { AuthRequest } from "../middleware/auth";
 
 // Ensure logs directory exists
 const LOGS_DIR = path.join(process.cwd(), "logs");
@@ -329,6 +332,184 @@ export const tripCircuitBreakerHandler = async (req: Request, res: Response): Pr
 };
 
 /**
+ * Controller: SLA tracking metrics for deposit approvals.
+ * Calculates processing time from deposit initiation (created_at) to completion
+ * (updated_at where status = 'completed') over a rolling 24-hour window.
+ * SLA breach threshold is 30 seconds per deposit.
+ */
+const SLA_BREACH_THRESHOLD_SECONDS = parseInt(
+  process.env.SLA_BREACH_THRESHOLD_SECONDS || "30",
+  10,
+);
+
+export const getSlaMetrics = async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await pool.query<{
+      total_deposits: string;
+      avg_delay_seconds: string | null;
+      min_delay_seconds: string | null;
+      max_delay_seconds: string | null;
+      sla_breached: string;
+      p95_delay_seconds: string | null;
+    }>(
+      `SELECT
+         COUNT(*)                                                          AS total_deposits,
+         AVG(EXTRACT(EPOCH FROM (updated_at - created_at)))               AS avg_delay_seconds,
+         MIN(EXTRACT(EPOCH FROM (updated_at - created_at)))               AS min_delay_seconds,
+         MAX(EXTRACT(EPOCH FROM (updated_at - created_at)))               AS max_delay_seconds,
+         COUNT(*) FILTER (
+           WHERE EXTRACT(EPOCH FROM (updated_at - created_at)) > $1
+         )                                                                 AS sla_breached,
+         PERCENTILE_CONT(0.95) WITHIN GROUP (
+           ORDER BY EXTRACT(EPOCH FROM (updated_at - created_at))
+         )                                                                 AS p95_delay_seconds
+       FROM transactions
+       WHERE type = 'deposit'
+         AND status = 'completed'
+         AND created_at >= NOW() - INTERVAL '24 hours'`,
+      [SLA_BREACH_THRESHOLD_SECONDS],
+    );
+
+    const row = result.rows[0];
+    const total = parseInt(row.total_deposits, 10);
+    const breached = parseInt(row.sla_breached, 10);
+    const avgDelay = row.avg_delay_seconds !== null ? parseFloat(row.avg_delay_seconds) : null;
+    const minDelay = row.min_delay_seconds !== null ? parseFloat(row.min_delay_seconds) : null;
+    const maxDelay = row.max_delay_seconds !== null ? parseFloat(row.max_delay_seconds) : null;
+    const p95Delay = row.p95_delay_seconds !== null ? parseFloat(row.p95_delay_seconds) : null;
+
+    const slaComplianceRate = total > 0 ? ((total - breached) / total) * 100 : 100;
+
+    res.json({
+      success: true,
+      window: "24h",
+      sla_breach_threshold_seconds: SLA_BREACH_THRESHOLD_SECONDS,
+      timestamp: new Date().toISOString(),
+      metrics: {
+        total_deposits: total,
+        sla_breached: breached,
+        sla_compliance_rate: Math.round(slaComplianceRate * 100) / 100,
+        avg_delay_seconds: avgDelay !== null ? Math.round(avgDelay * 1000) / 1000 : null,
+        min_delay_seconds: minDelay !== null ? Math.round(minDelay * 1000) / 1000 : null,
+        max_delay_seconds: maxDelay !== null ? Math.round(maxDelay * 1000) / 1000 : null,
+        p95_delay_seconds: p95Delay !== null ? Math.round(p95Delay * 1000) / 1000 : null,
+      },
+    });
+  } catch (error) {
+    winstonOutageLogger.error("Failed to fetch SLA metrics", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch SLA metrics");
+  }
+};
+
+import { getTelecomAverageMetrics } from "../utils/logger";
+
+export const getTelecomLatencyMetricsController = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const provider = req.query.provider as string | undefined;
+    const metrics = getTelecomAverageMetrics(provider);
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      data: metrics,
+    });
+  } catch (error) {
+    winstonOutageLogger.error("Failed to fetch telecom latency metrics", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch telecom latency metrics");
+  }
+};
+
+/**
+ * Controller: List manual failover (enable/disable) state for every provider.
+ * Acceptance Criteria: Display current provider state indicators on screen (#1550).
+ */
+export const getProviderMaintenanceState = async (
+  _req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const settings = await providerSettingsService.getAllSettings();
+
+    res.json({
+      success: true,
+      providers: settings.map((s) => ({
+        provider: s.provider_name,
+        enabled: s.is_enabled ?? true,
+        disabledReason: s.disabled_reason ?? null,
+        disabledBy: s.disabled_by ?? null,
+        disabledAt: s.disabled_at ?? null,
+      })),
+    });
+  } catch (error) {
+    winstonOutageLogger.error("Failed to fetch provider maintenance state", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch provider maintenance state");
+  }
+};
+
+const isAdminRole = (role?: string) => role === "admin" || role === "super-admin";
+
+/**
+ * Controller: Manually toggle a provider offline/online for unscheduled maintenance.
+ * Acceptance Criteria: Expose administrative endpoints protecting toggle routes
+ * with permissions; save state selections to database config variables (#1550).
+ */
+export const toggleProviderMaintenanceHandler = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const user = (req as AuthRequest).user;
+    if (!user || !isAdminRole(user.role)) {
+      throw createError(ERROR_CODES.FORBIDDEN, "Admin access required", {
+        message: "Admin access required",
+      });
+    }
+
+    const { provider } = req.params;
+    const { enabled, reason } = req.body;
+
+    if (!provider || typeof provider !== "string") {
+      throw createError(ERROR_CODES.INVALID_INPUT, "Provider is required");
+    }
+    if (typeof enabled !== "boolean") {
+      throw createError(ERROR_CODES.INVALID_INPUT, "enabled (boolean) is required");
+    }
+
+    const updated = await providerSettingsService.setProviderEnabled(
+      provider,
+      enabled,
+      user.id,
+      reason ?? null,
+    );
+
+    winstonOutageLogger.info("PROVIDER_MAINTENANCE_TOGGLED", {
+      provider: updated.provider_name,
+      enabled: updated.is_enabled,
+      updatedBy: user.id,
+      reason: updated.disabled_reason,
+    });
+
+    res.json({
+      success: true,
+      message: `Provider ${provider} ${enabled ? "enabled" : "disabled"}`,
+      provider: {
+        provider: updated.provider_name,
+        enabled: updated.is_enabled ?? true,
+        disabledReason: updated.disabled_reason ?? null,
+        disabledBy: updated.disabled_by ?? null,
+        disabledAt: updated.disabled_at ?? null,
+      },
+    });
+  } catch (error) {
+    if ((error as any).status) throw error;
+    winstonOutageLogger.error("Failed to toggle provider maintenance state", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to toggle provider maintenance state");
+  }
+};
+
+/**
  * Express Router mounting all monitoring dashboard endpoints
  */
 import { Router } from "express";
@@ -344,5 +525,8 @@ router.get("/alerts", (_req: Request, res: Response) => {
 router.get("/logs", getOutageLogs);
 router.post("/circuit-breaker/reset", resetCircuitBreakerHandler);
 router.post("/circuit-breaker/trip", tripCircuitBreakerHandler);
+router.get("/sla", getSlaMetrics);
+router.get("/telecom-latency", getTelecomLatencyMetricsController);
 
 export default router;
+

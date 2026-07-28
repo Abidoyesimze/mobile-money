@@ -539,9 +539,6 @@ export class OrangeProvider extends BaseProvider {
             ...requestHeaders,
             Authorization: this.buildBearerAuthHeader(token),
             "Content-Type": requestHeaders["Content-Type"] ?? "application/json",
-            Authorization: `Bearer ${token}`,
-            "Content-Type":
-              requestHeaders["Content-Type"] ?? "application/json",
           },
         });
 
@@ -584,8 +581,6 @@ export class OrangeProvider extends BaseProvider {
     return this.authenticateDirect();
   }
 
-  private async authenticateDirect(): Promise<string> {
-    if (this.apiToken && this.clock() < this.apiTokenExpiry) {
   private async authenticateDirect(forceRefresh = false): Promise<string> {
     const now = this.clock();
     if (

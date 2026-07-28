@@ -77,29 +77,54 @@ const feeDisplay = document.getElementById("fee-display");
 const finalDisplay = document.getElementById("final-display");
 
 function calculateConversion() {
+  if (!sendAmountInput || !sendCurrencySelect || !receiveAssetSelect) return;
+
   const sendAmt = parseFloat(sendAmountInput.value) || 0;
   const sendCurrency = sendCurrencySelect.value;
   const receiveAsset = receiveAssetSelect.value;
 
   const config = RATES[sendCurrency];
-  const rate = config[receiveAsset];
+  if (!config) return;
+
+  const rate = config[receiveAsset] || 0;
 
   // Operator fee (1.5%)
   const fee = sendAmt * 0.015;
   const netAmt = Math.max(0, sendAmt - fee);
   const receiveVal = netAmt * rate;
 
-  // Update DOM elements
-  rateDisplay.textContent = config.rateStr.replace("USDC", receiveAsset);
-  feeDisplay.textContent = `${fee.toFixed(0)} ${sendCurrency}`;
-  receiveAmountInput.value = receiveVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-  finalDisplay.textContent = `${receiveAmountInput.value} ${receiveAsset}`;
+  // Format decimal display outputs to 2 decimal places
+  const formattedFee = fee.toFixed(2);
+  const formattedReceiveVal = receiveVal.toFixed(2);
+
+  // Update DOM elements cleanly
+  if (rateDisplay) {
+    rateDisplay.textContent = config.rateStr.replace("USDC", receiveAsset);
+  }
+  if (feeDisplay) {
+    feeDisplay.textContent = `${formattedFee} ${sendCurrency}`;
+  }
+  if (receiveAmountInput) {
+    receiveAmountInput.value = formattedReceiveVal;
+  }
+  if (finalDisplay) {
+    finalDisplay.textContent = `${formattedReceiveVal} ${receiveAsset}`;
+  }
 }
 
-// Add event listeners for inputs
-sendAmountInput.addEventListener("input", calculateConversion);
-sendCurrencySelect.addEventListener("change", calculateConversion);
-receiveAssetSelect.addEventListener("change", calculateConversion);
+// Add event listeners for inputs (including keypress and keyup for live calculation)
+if (sendAmountInput) {
+  sendAmountInput.addEventListener("input", calculateConversion);
+  sendAmountInput.addEventListener("keypress", calculateConversion);
+  sendAmountInput.addEventListener("keyup", calculateConversion);
+  sendAmountInput.addEventListener("change", calculateConversion);
+}
+if (sendCurrencySelect) {
+  sendCurrencySelect.addEventListener("change", calculateConversion);
+}
+if (receiveAssetSelect) {
+  receiveAssetSelect.addEventListener("change", calculateConversion);
+}
 
 // Initial calculation
 calculateConversion();
@@ -218,3 +243,152 @@ document.getElementById("tab-btn-toml").addEventListener("click", () => selectTa
 document.getElementById("tab-btn-kyc").addEventListener("click", () => selectTab("kyc"));
 document.getElementById("tab-btn-stats").addEventListener("click", () => selectTab("stats"));
 document.getElementById("btn-copy-code").addEventListener("click", copyCode);
+
+// SLA Dashboard
+function formatDelay(seconds) {
+  if (seconds === null || seconds === undefined) return "—";
+  if (seconds < 1) return `${Math.round(seconds * 1000)} ms`;
+  return `${seconds.toFixed(2)} s`;
+}
+
+async function loadSlaMetrics() {
+  const fields = ["sla-total", "sla-compliance", "sla-avg", "sla-p95", "sla-minmax", "sla-breached"];
+  fields.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = "Loading…";
+  });
+
+  try {
+    const res = await fetch("/api/admin/monitoring/sla");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.success || !data.metrics) throw new Error("Unexpected response");
+
+    const m = data.metrics;
+    document.getElementById("sla-total").textContent = m.total_deposits.toLocaleString();
+    document.getElementById("sla-compliance").textContent =
+      `${m.sla_compliance_rate.toFixed(1)}%`;
+    document.getElementById("sla-avg").textContent = formatDelay(m.avg_delay_seconds);
+    document.getElementById("sla-p95").textContent = formatDelay(m.p95_delay_seconds);
+    document.getElementById("sla-minmax").textContent =
+      `${formatDelay(m.min_delay_seconds)} / ${formatDelay(m.max_delay_seconds)}`;
+    document.getElementById("sla-breached").textContent = m.sla_breached.toLocaleString();
+
+    const breachCard = document.getElementById("sla-breach-card");
+    if (breachCard) {
+      breachCard.classList.toggle("sla-card-danger", m.sla_breached > 0);
+      breachCard.classList.toggle("sla-card-alert", m.sla_breached === 0);
+    }
+
+    const updatedAt = document.getElementById("sla-updated-at");
+    if (updatedAt) updatedAt.textContent = new Date().toLocaleTimeString();
+  } catch (err) {
+    fields.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = "—";
+    });
+    const updatedAt = document.getElementById("sla-updated-at");
+    if (updatedAt) updatedAt.textContent = "unavailable";
+  }
+}
+
+// Load on page start and refresh every 60 seconds
+loadSlaMetrics();
+setInterval(loadSlaMetrics, 60000);
+
+const btnRefreshSla = document.getElementById("btn-refresh-sla");
+if (btnRefreshSla) btnRefreshSla.addEventListener("click", loadSlaMetrics);
+
+// Provider Failover Dashboard (#1550)
+async function toggleProvider(provider, currentlyEnabled) {
+  const token = window.prompt(
+    "Admin auth token required to change provider state:",
+  );
+  if (!token) return;
+
+  const reason = currentlyEnabled
+    ? window.prompt("Reason for disabling this provider (optional):", "") || undefined
+    : undefined;
+
+  try {
+    const res = await fetch(
+      `/api/admin/monitoring/provider-maintenance/${encodeURIComponent(provider)}/toggle`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ enabled: !currentlyEnabled, reason }),
+      },
+    );
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert(`Failed to toggle ${provider}: ${body.message || res.status}`);
+      return;
+    }
+
+    await loadProviderMaintenance();
+  } catch (err) {
+    alert(`Failed to toggle ${provider}: ${err.message || "network error"}`);
+  }
+}
+
+function renderProviderCard(p) {
+  const statusClass = p.enabled ? "failover-online" : "failover-offline";
+  const statusText = p.enabled ? "Online" : "Offline";
+  const reasonHtml =
+    !p.enabled && p.disabledReason
+      ? `<div class="failover-reason">Reason: ${p.disabledReason}</div>`
+      : "";
+
+  const card = document.createElement("div");
+  card.className = `failover-card glass ${statusClass}`;
+  card.innerHTML = `
+    <div class="failover-provider-name">${p.provider.toUpperCase()}</div>
+    <div class="failover-status">${statusText}</div>
+    ${reasonHtml}
+    <button class="btn-toggle-provider" data-provider="${p.provider}" data-enabled="${p.enabled}">
+      ${p.enabled ? "Take Offline" : "Bring Online"}
+    </button>
+  `;
+  card
+    .querySelector(".btn-toggle-provider")
+    .addEventListener("click", () => toggleProvider(p.provider, p.enabled));
+  return card;
+}
+
+async function loadProviderMaintenance() {
+  const grid = document.getElementById("failover-grid");
+  const updatedAt = document.getElementById("failover-updated-at");
+  if (!grid) return;
+
+  try {
+    const res = await fetch("/api/monitoring/provider-maintenance");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.success || !Array.isArray(data.providers)) {
+      throw new Error("Unexpected response");
+    }
+
+    grid.innerHTML = "";
+    if (data.providers.length === 0) {
+      grid.innerHTML = '<p class="failover-loading">No providers configured yet.</p>';
+    } else {
+      data.providers.forEach((p) => grid.appendChild(renderProviderCard(p)));
+    }
+
+    if (updatedAt) updatedAt.textContent = new Date().toLocaleTimeString();
+  } catch (err) {
+    grid.innerHTML = '<p class="failover-loading">Failed to load provider states.</p>';
+    if (updatedAt) updatedAt.textContent = "unavailable";
+  }
+}
+
+loadProviderMaintenance();
+setInterval(loadProviderMaintenance, 60000);
+
+const btnRefreshFailover = document.getElementById("btn-refresh-failover");
+if (btnRefreshFailover)
+  btnRefreshFailover.addEventListener("click", loadProviderMaintenance);

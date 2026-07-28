@@ -80,80 +80,80 @@ flowchart LR
 
 ### Use Cases
 
-- **Remittances** — Send money home across borders at ~1–2% vs 7–10% with traditional services
-- **Cross-border B2B payments** — Pay suppliers in other African countries without expensive wire transfers
-- **Stable savings** — Convert volatile local currency to USDC via mobile money
-- **Merchant payments** — Accept crypto, settle in local mobile money
-- **Developer integrations** — Build payment apps on top of our REST + GraphQL APIs
+* **Remittances** — Send money home across borders at ~1–2% vs 7–10% with traditional services
+* **Cross-border B2B payments** — Pay suppliers in other African countries without expensive wire transfers
+* **Stable savings** — Convert volatile local currency to USDC via mobile money
+* **Merchant payments** — Accept crypto, settle in local mobile money
+* **Developer integrations** — Build payment apps on top of our REST + GraphQL APIs
 
 ## 🚀 Key Features
 
 ### Core Platform
 
-- **Mobile Money Integration** — MTN MoMo, Airtel Money, Orange Money with circuit breaker, failover, and batch payouts
-- **Stellar Blockchain** — XLM, USDC, and custom asset support via Stellar SDK + Horizon API
-- **Dual API** — REST (40+ endpoints) and GraphQL (queries, mutations, and real-time subscriptions)
-- **Real-time Processing** — BullMQ job queues with Redis, admin dashboard at `/admin/queues`
-- **WebSocket** — Live transaction updates with JWT auth, per-user rooms, and Redis pub/sub for horizontal scaling
-- **Provider Mock Server** — Full mock for MTN + Airtel APIs for local development without real credentials
+* **Mobile Money Integration** — MTN MoMo, Airtel Money, Orange Money with circuit breaker, failover, and batch payouts
+* **Stellar Blockchain** — XLM, USDC, and custom asset support via Stellar SDK + Horizon API
+* **Dual API** — REST (40+ endpoints) and GraphQL (queries, mutations, and real-time subscriptions)
+* **Real-time Processing** — BullMQ job queues with Redis, admin dashboard at `/admin/queues`
+* **WebSocket** — Live transaction updates with JWT auth, per-user rooms, and Redis pub/sub for horizontal scaling
+* **Provider Mock Server** — Full mock for MTN + Airtel APIs for local development without real credentials
 
 ### Security & Compliance
 
-- **Multi-tier KYC** — Tiered identity verification with document upload (S3) and third-party verification (Entrust)
-- **AML Monitoring** — Auto-flagging of suspicious patterns (large transactions, rapid structuring, daily totals)
-- **Travel Rule Compliance** — FATF travel rule data collection for qualifying transactions
-- **GDPR / Privacy** — Data export, deletion, and consent management endpoints
-- **Sanctions Screening** — Automated screening against sanctions lists
-- **2FA (TOTP)** — Time-based one-time passwords via Speakeasy, required for withdrawals
-- **RBAC** — Role-based access control via Casbin
-- **Rate Limiting & Audit Logging** — Multi-layer rate limiting with full audit trail
-- **PII Encryption** — AES-256-GCM encryption for sensitive data at rest
+* **Multi-tier KYC** — Tiered identity verification with document upload (S3) and third-party verification (Entrust)
+* **AML Monitoring** — Auto-flagging of suspicious patterns (large transactions, rapid structuring, daily totals)
+* **Travel Rule Compliance** — FATF travel rule data collection for qualifying transactions
+* **GDPR / Privacy** — Data export, deletion, and consent management endpoints
+* **Sanctions Screening** — Automated screening against sanctions lists
+* **2FA (TOTP)** — Time-based one-time passwords via Speakeasy, required for withdrawals
+* **RBAC** — Role-based access control via Casbin
+* **Rate Limiting & Audit Logging** — Multi-layer rate limiting with full audit trail
+* **PII Encryption** — AES-256-GCM encryption for sensitive data at rest
 
 ### Financial Engine
 
-- **Dynamic Fee Engine** — Configurable fee strategies with VIP tiers (25KB+ fee strategy engine)
-- **Transaction Limits** — Provider-specific and KYC-tiered daily limits
-- **Vault System** — Secure fund storage with distributed locking
-- **Double-Entry Ledger** — Internal accounting system with full transaction journal
-- **Dispute Management** — Complete dispute workflow with state machine
-- **Monthly Statements** — Automated PDF statement generation
-- **Reconciliation** — Provider reconciliation workflows
+* **Dynamic Fee Engine** — Configurable fee strategies with VIP tiers (25KB+ fee strategy engine)
+* **Transaction Limits** — Provider-specific and KYC-tiered daily limits
+* **Vault System** — Secure fund storage with distributed locking
+* **Double-Entry Ledger** — Internal accounting system with full transaction journal
+* **Dispute Management** — Complete dispute workflow with state machine
+* **Monthly Statements** — Automated PDF statement generation
+* **Reconciliation** — Provider reconciliation workflows
 
 ### Stellar Protocol (SEP) Support
 
-- **SEP-06** — Deposit and Withdrawal API
-- **SEP-10** — Web Authentication (challenge-response)
-- **SEP-12** — KYC API (customer CRUD with document upload)
-- **SEP-24** — Interactive Deposit and Withdrawal (hosted flow)
-- **SEP-31** — Cross-Border Payments (send-side anchor)
+* **SEP-06** — Deposit and Withdrawal API
+* **SEP-10** — Web Authentication (challenge-response)
+* **SEP-12** — KYC API (customer CRUD with document upload)
+* **SEP-24** — Interactive Deposit and Withdrawal (hosted flow)
+* **SEP-31** — Cross-Border Payments (send-side anchor)
 
 ### Smart Contracts
 
-- **Escrow Contract** — Soroban smart contract for escrowed payments (Rust)
-- **HTLC Contract** — Hash Time-Locked Contract for atomic cross-chain swaps (Rust)
+* **Escrow Contract** — Soroban smart contract for escrowed payments (Rust)
+* **HTLC Contract** — Hash Time-Locked Contract for atomic cross-chain swaps (Rust)
 
 ### Notifications
 
-- **Email** — SendGrid integration
-- **SMS** — Twilio integration
-- **Push Notifications** — Firebase Cloud Messaging
-- **WhatsApp** — Twilio WhatsApp channel
-- **PagerDuty** — Operational alerting
+* **Email** — SendGrid integration
+* **SMS** — Twilio integration
+* **Push Notifications** — Firebase Cloud Messaging
+* **WhatsApp** — Twilio WhatsApp channel
+* **PagerDuty** — Operational alerting
 
 ### Developer Tools
 
-- **CLI** (`momo-cli`) — Admin tool for auth, status checks, and transaction retries
-- **Kotlin SDK** — Auto-generated from OpenAPI spec
-- **Postman Collections** — Pre-built API collections for testing
-- **VS Code Extension** — Transaction monitor with live WebSocket logs
-- **Swagger UI** — Auto-generated from Zod schemas at `/docs` (dev mode)
+* **CLI** (`momo-cli`) — Admin tool for auth, status checks, and transaction retries
+* **Kotlin SDK** — Auto-generated from OpenAPI spec
+* **Postman Collections** — Pre-built API collections for testing
+* **VS Code Extension** — Transaction monitor with live WebSocket logs
+* **Swagger UI** — Auto-generated from Zod schemas at `/docs` (dev mode)
 
 ## 📋 Prerequisites
 
-- Node.js 20+ (LTS)
-- PostgreSQL 16+
-- Redis 7+
-- Docker (optional, recommended for local dev)
+* Node.js 20+ (LTS)
+* PostgreSQL 16+
+* Redis 7+
+* Docker (optional, recommended for local dev)
 
 ## 🛠️ Quick Start
 
@@ -229,6 +229,123 @@ npm start
 
 Server starts at `http://localhost:3000`
 
+## 🐳 Local Docker Environment
+
+This project ships with two Docker Compose configurations for local development. Both start the full application stack — no external services required.
+
+### Compose Files
+
+| File                     | Purpose                                                                         |
+| ------------------------ | ------------------------------------------------------------------------------- |
+| `docker-compose.yml`     | Full stack with hot-reload, Loki/Grafana logging, and a local Stellar node      |
+| `docker-compose.dev.yml` | Lightweight dev stack — mounts source directly and enables the Node.js debugger |
+
+### Services
+
+`docker-compose.yml` starts the following containers:
+
+| Container                        | Image                       | Exposed Ports                                    | Purpose                  |
+| -------------------------------- | --------------------------- | ------------------------------------------------ | ------------------------ |
+| `mobilemoney_app`                | Built from `Dockerfile.dev` | `3000`                                           | API server (hot-reload)  |
+| `mobilemoney_postgres`           | `postgres:16-alpine`        | —                                                | Primary database         |
+| `mobilemoney_redis`              | `redis:7-alpine`            | —                                                | Cache, sessions, queues  |
+| `mobilemoney_maildev`            | `maildev/maildev:2.1.0`     | `1080` (UI), `1025` (SMTP)                       | Local email capture      |
+| `mobilemoney_stellar_quickstart` | `stellar/quickstart:latest` | `8000` (Horizon/Friendbot), `8001` (Soroban RPC) | Local Stellar node       |
+| `mobilemoney_loki`               | `grafana/loki:latest`       | `3100`                                           | Log aggregation          |
+| `mobilemoney_promtail`           | `grafana/promtail:latest`   | —                                                | Log shipper              |
+| `mobilemoney_grafana`            | `grafana/grafana:latest`    | `3001`                                           | Metrics & log dashboards |
+
+`docker-compose.dev.yml` starts a slimmer set: `app`, `db`, `redis`, `maildev`, and `stellar` — with the Node.js inspector exposed on port `9229` for debugger attachment.
+
+### Running the Containers
+
+```bash
+# Start all services (foreground — streams all logs to your terminal)
+docker compose up
+
+# Start all services in the background
+docker compose up -d
+
+# Start only specific services
+docker compose up app postgres redis
+
+# Start the lightweight dev stack (with debugger)
+docker compose -f docker-compose.dev.yml up
+
+# Stop all containers (preserves volumes)
+docker compose down
+
+# Stop and delete all data volumes (fresh database)
+docker compose down -v
+
+# Rebuild the app image after Dockerfile changes
+docker compose up --build
+```
+
+> **First run:** the app waits for Postgres and Redis health checks to pass before starting, so the initial boot takes ~15–30 seconds.
+
+### Tracking Logs
+
+**Stream all logs:**
+
+```bash
+docker compose logs -f
+```
+
+**Stream logs for a single service:**
+
+```bash
+docker compose logs -f app
+docker compose logs -f postgres
+docker compose logs -f redis
+```
+
+**Show the last N lines and follow:**
+
+```bash
+docker compose logs --tail=100 -f app
+```
+
+**View logs from a one-off container by name:**
+
+```bash
+docker logs mobilemoney_app -f
+```
+
+**Grafana / Loki (structured log explorer):**
+
+1. Open `http://localhost:3001` in your browser (credentials: `admin` / `admin`).
+2. Navigate to **Explore** → select the **Loki** data source.
+3. Query by service name, e.g. `{service_name="mobile-money-api"}`.
+4. Filter by log level: `{service_name="mobile-money-api"} | json | level="error"`.
+
+**Captured emails (Maildev UI):**
+
+Open `http://localhost:1080` to inspect emails sent by the application during development.
+
+### Useful Container Commands
+
+```bash
+# Open a shell inside the running app container
+docker compose exec app sh
+
+# Run database migrations inside the container
+docker compose exec app npm run migrate:up
+
+# Seed development data
+docker compose exec app npm run seed
+
+# Check the Stellar local node (Friendbot / faucet)
+curl http://localhost:8000/friendbot?addr=<STELLAR_PUBLIC_KEY>
+
+# Inspect Redis keys
+docker compose exec redis redis-cli keys "*"
+```
+
+### Environment Variables
+
+The compose files pre-configure `DATABASE_URL` and `REDIS_URL` to point at the containerised services, so you do not need to change those in `.env` for local development. All other variables (API keys, `JWT_SECRET`, etc.) are still read from your `.env` file via `env_file`.
+
 ## 🧪 Testing
 
 ```bash
@@ -242,12 +359,12 @@ npm run test:mutation       # Mutation testing (Stryker)
 
 **Test infrastructure includes:**
 
-- Unit & integration tests across controllers, services, middleware, routes
-- Pact consumer-driven contract tests for provider APIs
-- Playwright end-to-end tests
-- k6 load/stress tests with benchmarking against Go vs Node ingest services
-- Stryker mutation testing
-- Fuzz testing
+* Unit & integration tests across controllers, services, middleware, routes
+* Pact consumer-driven contract tests for provider APIs
+* Playwright end-to-end tests
+* k6 load/stress tests with benchmarking against Go vs Node ingest services
+* Stryker mutation testing
+* Fuzz testing
 
 > Coverage reports upload to [Codecov](https://codecov.io/gh/sublime247/mobile-money) on every push to main.
 
@@ -257,8 +374,8 @@ npm run test:mutation       # Mutation testing (Stryker)
 
 Start the dev server and visit:
 
-- **Swagger UI**: `http://localhost:3000/docs`
-- **OpenAPI JSON**: `http://localhost:3000/docs/openapi.json`
+* **Swagger UI**: `http://localhost:3000/docs`
+* **OpenAPI JSON**: `http://localhost:3000/docs/openapi.json`
 
 The API spec is auto-generated from Zod validation schemas at runtime — no manual YAML to maintain.
 
@@ -399,10 +516,10 @@ X-API-Key: <key>
 
 Auto-flagging of suspicious transactions:
 
-- Single transaction > 1,000,000 XAF
-- 24h total > 5,000,000 XAF
-- Rapid structuring (3+ mixed in 15 min)
-- Sanctions list screening on every transaction
+* Single transaction > 1,000,000 XAF
+* 24h total > 5,000,000 XAF
+* Rapid structuring (3+ mixed in 15 min)
+* Sanctions list screening on every transaction
 
 ## 🏗️ Architecture
 
@@ -707,11 +824,11 @@ HTTP method-based routing: `GET`/`HEAD`/`OPTIONS` → read replicas (round-robin
 
 Prometheus metrics at `/metrics`:
 
-- Transaction counts by status and provider
-- API response times (histograms)
-- Queue depths and job latencies
-- Error rates by category
-- Provider availability and circuit breaker state
+* Transaction counts by status and provider
+* API response times (histograms)
+* Queue depths and job latencies
+* Error rates by category
+* Provider availability and circuit breaker state
 
 ### Health Checks
 
@@ -725,14 +842,14 @@ curl http://localhost:3000/health/lb  # Load balancer
 
 Dual logging stack:
 
-- **Primary**: Structured JSON → Loki → Grafana (included in docker-compose)
-- **Secondary**: Filebeat → Logstash → Elasticsearch → Kibana (ELK stack configs in `elk/`)
+* **Primary**: Structured JSON → Loki → Grafana (included in docker-compose)
+* **Secondary**: Filebeat → Logstash → Elasticsearch → Kibana (ELK stack configs in `elk/`)
 
 ### Alerting
 
-- **Sentry** — Error tracking and exception monitoring
-- **Datadog** — APM tracing (dd-trace)
-- **PagerDuty** — Operational alerts (low liquidity, provider outages)
+* **Sentry** — Error tracking and exception monitoring
+* **Datadog** — APM tracing (dd-trace)
+* **PagerDuty** — Operational alerts (low liquidity, provider outages)
 
 ## 🚢 Deployment
 
@@ -753,12 +870,12 @@ The production Dockerfile uses a multi-stage build targeting < 200MB image size 
 
 Pre-built manifests in `k8s/` include:
 
-- **Deployment** — 3 replicas, rolling updates, startup/liveness/readiness probes, resource limits
-- **Worker Deployment** — Separate BullMQ worker pods
-- **KEDA Autoscaling** — Scale workers based on queue depth (threshold: 20 jobs, 1–20 replicas)
-- **HPA** — CPU-based horizontal pod autoscaling for the API
-- **PodDisruptionBudget** — Minimum 2 available pods during disruptions
-- **Helm Chart** — Parameterized deployment in `k8s/helm/`
+* **Deployment** — 3 replicas, rolling updates, startup/liveness/readiness probes, resource limits
+* **Worker Deployment** — Separate BullMQ worker pods
+* **KEDA Autoscaling** — Scale workers based on queue depth (threshold: 20 jobs, 1–20 replicas)
+* **HPA** — CPU-based horizontal pod autoscaling for the API
+* **PodDisruptionBudget** — Minimum 2 available pods during disruptions
+* **Helm Chart** — Parameterized deployment in `k8s/helm/`
 
 ```bash
 kubectl apply -f k8s/
@@ -768,11 +885,11 @@ kubectl apply -f k8s/
 
 Full AWS infrastructure in `terraform/`:
 
-- VPC with public/private subnets across multiple AZs
-- ECS Fargate for containerized deployment
-- RDS PostgreSQL with Multi-AZ (production)
-- ElastiCache Redis with failover
-- Application Load Balancer
+* VPC with public/private subnets across multiple AZs
+* ECS Fargate for containerized deployment
+* RDS PostgreSQL with Multi-AZ (production)
+* ElastiCache Redis with failover
+* Application Load Balancer
 
 ```bash
 cd terraform
@@ -829,13 +946,13 @@ docker compose -f docker-compose.dev.yml up
 
 Standardized error codes organized by category:
 
-- **4000-4099**: Validation (HTTP 400)
-- **4010-4019**: Authentication (HTTP 401)
-- **4030-4039**: Authorization (HTTP 403)
-- **4040-4049**: Not Found (HTTP 404)
-- **4090-4099**: Conflict (HTTP 409)
-- **4290-4299**: Rate Limit (HTTP 429)
-- **5000+**: Server Errors (HTTP 500+)
+* **4000-4099**: Validation (HTTP 400)
+* **4010-4019**: Authentication (HTTP 401)
+* **4030-4039**: Authorization (HTTP 403)
+* **4040-4049**: Not Found (HTTP 404)
+* **4090-4099**: Conflict (HTTP 409)
+* **4290-4299**: Rate Limit (HTTP 429)
+* **5000+**: Server Errors (HTTP 500+)
 
 See [src/constants/errorCodes.ts](src/constants/errorCodes.ts) for complete reference.
 
@@ -843,12 +960,12 @@ See [src/constants/errorCodes.ts](src/constants/errorCodes.ts) for complete refe
 
 Extensive documentation is available in the [`docs/`](docs/) directory (59 documents), covering:
 
-- **Architecture** — System design, Stellar-EVM bridge architecture, ZK balance proofs research
-- **Features** — KYC, RBAC, GraphQL, SSO, transaction filtering, monthly statements, vaults
-- **Stellar/SEP** — SEP-10/12/31 implementation guides, fee bumping, fee strategy engine
-- **Infrastructure** — CI/CD pipeline, Docker dev setup, ELK stack, database backups, distributed locks
-- **Integrations** — Bridge provider guides, Orange integration, Zapier/Make.com webhooks
-- **Observability** — Metrics, slow query logging, PagerDuty, low liquidity alerts
+* **Architecture** — System design, Stellar-EVM bridge architecture, ZK balance proofs research
+* **Features** — KYC, RBAC, GraphQL, SSO, transaction filtering, monthly statements, vaults
+* **Stellar/SEP** — SEP-10/12/31 implementation guides, fee bumping, fee strategy engine
+* **Infrastructure** — CI/CD pipeline, Docker dev setup, ELK stack, database backups, distributed locks
+* **Integrations** — Bridge provider guides, Orange integration, Zapier/Make.com webhooks
+* **Observability** — Metrics, slow query logging, PagerDuty, low liquidity alerts
 
 A Docusaurus documentation portal is available in [`docs-portal/`](docs-portal/).
 
@@ -873,15 +990,15 @@ Check [`good first issue`](https://github.com/sublime247/mobile-money/labels/goo
 
 ## 🗺️ Roadmap
 
-- [ ] SEP-38 implementation (Quotes and Price Streams)
-- [ ] Additional providers (Vodacom, Tigo, M-Pesa)
-- [ ] Mobile SDKs (iOS, Android)
-- [ ] Merchant dashboard UI
-- [ ] Advanced analytics and reporting dashboard
-- [ ] Multi-currency settlement support
-- [ ] Additional stablecoin support (USDT, EURC)
-- [ ] DeFi protocol integrations
-- [ ] External accounting integrations (QuickBooks, Xero)
+* [ ] SEP-38 implementation (Quotes and Price Streams)
+* [ ] Additional providers (Vodacom, Tigo, M-Pesa)
+* [ ] Mobile SDKs (iOS, Android)
+* [ ] Merchant dashboard UI
+* [ ] Advanced analytics and reporting dashboard
+* [ ] Multi-currency settlement support
+* [ ] Additional stablecoin support (USDT, EURC)
+* [ ] DeFi protocol integrations
+* [ ] External accounting integrations (QuickBooks, Xero)
 
 ## 📝 License
 
@@ -889,16 +1006,16 @@ MIT License — see [LICENSE](LICENSE) file.
 
 ## 🙏 Acknowledgments
 
-- [Stellar Development Foundation](https://stellar.org)
-- Mobile money providers (MTN, Airtel, Orange)
-- Open source community
+* [Stellar Development Foundation](https://stellar.org)
+* Mobile money providers (MTN, Airtel, Orange)
+* Open source community
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/sublime247/mobile-money/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/sublime247/mobile-money/discussions)
-- **Docs**: [Documentation Portal](docs-portal/)
+* **Issues**: [GitHub Issues](https://github.com/sublime247/mobile-money/issues)
+* **Discussions**: [GitHub Discussions](https://github.com/sublime247/mobile-money/discussions)
+* **Docs**: [Documentation Portal](docs-portal/)
 
 ---
 
-**Built with ❤️ for financial inclusion in Africa**
+Built with ❤️ for financial inclusion in Africa

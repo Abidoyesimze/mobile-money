@@ -538,6 +538,23 @@ export class TransactionModel {
     return this.list(limit, offset, undefined, undefined, { statuses });
   }
 
+  async findRefundableFailedPayouts(limit = 100): Promise<Transaction[]> {
+    const cappedLimit = Math.min(Math.max(Math.trunc(limit), 1), 500);
+    const result = await queryRead(
+      `SELECT ${TRANSACTION_SELECT_COLUMNS}
+       FROM transactions
+       WHERE type = 'withdraw'
+         AND status = $1
+         AND COALESCE(metadata->'refund'->>'completedAt', '') = ''
+         AND COALESCE(metadata->'refund'->>'status', '') <> 'processing'
+       ORDER BY updated_at ASC, created_at ASC
+       LIMIT $2`,
+      [TransactionStatus.Failed, cappedLimit],
+    );
+
+    return result.rows.map(mapTransactionRow).filter((t: any) => t !== null);
+  }
+
   async countByStatuses(statuses: TransactionStatus[] = []): Promise<number> {
     return this.count(undefined, undefined, { statuses });
   }

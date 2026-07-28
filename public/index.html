@@ -215,6 +215,57 @@
       </div>
     </section>
 
+    <!-- SLA Monitoring Dashboard -->
+    <section id="sla" class="sla-section">
+      <div class="container">
+        <div class="section-header">
+          <h2>Deposit SLA Dashboard</h2>
+          <p>Live monitoring of deposit approval processing times over the last 24 hours. SLA threshold: 30 seconds.</p>
+        </div>
+        <div class="sla-grid">
+          <div class="sla-card glass">
+            <div class="sla-label">Total Deposits (24h)</div>
+            <div class="sla-value" id="sla-total">—</div>
+          </div>
+          <div class="sla-card glass">
+            <div class="sla-label">SLA Compliance Rate</div>
+            <div class="sla-value" id="sla-compliance">—</div>
+          </div>
+          <div class="sla-card glass">
+            <div class="sla-label">Avg Processing Time</div>
+            <div class="sla-value" id="sla-avg">—</div>
+          </div>
+          <div class="sla-card glass">
+            <div class="sla-label">P95 Processing Time</div>
+            <div class="sla-value" id="sla-p95">—</div>
+          </div>
+          <div class="sla-card glass">
+            <div class="sla-label">Min / Max Delay</div>
+            <div class="sla-value" id="sla-minmax">—</div>
+          </div>
+          <div class="sla-card glass sla-card-alert" id="sla-breach-card">
+            <div class="sla-label">SLA Breaches</div>
+            <div class="sla-value" id="sla-breached">—</div>
+          </div>
+        </div>
+        <p class="sla-updated">Last updated: <span id="sla-updated-at">—</span> &nbsp;·&nbsp; <button class="btn-refresh" id="btn-refresh-sla">Refresh</button></p>
+      </div>
+    </section>
+
+    <!-- Provider Failover Dashboard -->
+    <section id="failover" class="failover-section">
+      <div class="container">
+        <div class="section-header">
+          <h2>Provider Failover Dashboard</h2>
+          <p>Manually toggle mobile money providers offline/online during unscheduled maintenance. Admin authentication required to change state.</p>
+        </div>
+        <div class="failover-grid" id="failover-grid">
+          <p class="failover-loading" id="failover-loading">Loading provider states…</p>
+        </div>
+        <p class="failover-updated">Last updated: <span id="failover-updated-at">—</span> &nbsp;·&nbsp; <button class="btn-refresh" id="btn-refresh-failover">Refresh</button></p>
+      </div>
+    </section>
+
     <!-- API Section -->
     <section id="api" class="api-section">
       <div class="container">

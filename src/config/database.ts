@@ -3,7 +3,9 @@ import { Pool, QueryConfig, QueryResult, QueryResultRow, PoolClient } from "pg";
 import { auditService } from "../services/auditlogService";
 import { isReadOnlyQuery } from "../utils/readOnlyDetector";
 import { dbReplicaLagSeconds, dbReplicaReadEnabled } from "../utils/metrics";
+import { startDeadlockDetector } from "./deadlockDetector";
 import { IS_SANDBOX, SANDBOX_DATABASE_URL, DATABASE_URL, DR_DATABASE_URL } from "./env";
+
 
 const isDRMode = (): boolean => !!DR_DATABASE_URL;
 
@@ -15,6 +17,11 @@ const productionSsl =
 // Configuration for slow query logging
 const SLOW_QUERY_THRESHOLD_MS = parseInt(
   process.env.SLOW_QUERY_THRESHOLD_MS || "1000",
+);
+// Queries exceeding this threshold suggest a missing or unused index and trigger
+// a higher-severity warning alongside the standard slow-query log entry.
+const SLOW_QUERY_INDEX_ALERT_THRESHOLD_MS = parseInt(
+  process.env.SLOW_QUERY_INDEX_ALERT_THRESHOLD_MS || "5000",
 );
 const ENABLE_SLOW_QUERY_LOGGING =
   process.env.ENABLE_SLOW_QUERY_LOGGING === "true" ||
@@ -128,6 +135,7 @@ function isTransientDatabaseError(error: unknown): boolean {
     code === "ETIMEDOUT" ||
     code === "57P01" ||
     code === "08006" ||
+    code === "40P01" ||
     message.includes("connection terminated") ||
     message.includes("terminated unexpectedly") ||
     message.includes("connection lost") ||
@@ -196,21 +204,39 @@ function sanitizeParams(params: any[]): any[] {
 }
 
 /**
- * Logs slow queries with sanitized information
+ * Logs slow queries with sanitized information.
+ * Queries above SLOW_QUERY_INDEX_ALERT_THRESHOLD_MS also emit a warn-level
+ * entry flagging a possible missing index.
  */
 function logSlowQuery(query: string, duration: number, params?: any[]): void {
   if (!ENABLE_SLOW_QUERY_LOGGING) return;
 
+  const sanitized = sanitizeQuery(query);
+  const sanitizedParams = params ? sanitizeParams(params) : undefined;
+  const durationRounded = Math.round(duration);
+
   const logEntry = {
     type: "slow_query",
-    duration: Math.round(duration),
+    duration: durationRounded,
     threshold: SLOW_QUERY_THRESHOLD_MS,
-    query: sanitizeQuery(query),
-    params: params ? sanitizeParams(params) : undefined,
+    query: sanitized,
+    params: sanitizedParams,
     timestamp: new Date().toISOString(),
   };
 
   console.log(JSON.stringify(logEntry));
+
+  if (duration > SLOW_QUERY_INDEX_ALERT_THRESHOLD_MS) {
+    logger.warn("possible_missing_index", {
+      type: "possible_missing_index",
+      duration: durationRounded,
+      index_alert_threshold: SLOW_QUERY_INDEX_ALERT_THRESHOLD_MS,
+      hint: "Query exceeded index-alert threshold. Review EXPLAIN ANALYZE output and confirm a matching index exists.",
+      query: sanitized,
+      params: sanitizedParams,
+      timestamp: new Date().toISOString(),
+    });
+  }
 }
 
 // Enhanced Pool with query timing
@@ -611,7 +637,10 @@ function startReplicaLagMonitor(): void {
   }, REPLICA_LAG_MONITOR_INTERVAL_MS);
 }
 
-startReplicaLagMonitor();
+if (process.env.NODE_ENV !== "test") {
+  startReplicaLagMonitor();
+  startDeadlockDetector(pool);
+}
 
 /**
  * Execute a read-only SQL query against a replica pool if available.
@@ -643,6 +672,21 @@ export async function queryRead<T extends import("pg").QueryResultRow = any>(
 
   // Fall back: use primary pool (which goes through PgBouncer)
   return pool.query<T>(text, params);
+}
+
+/**
+ * Specifically routes transaction log read queries (SELECT) to read-replica pool.
+ * Automatically falls back to primary database pool if replicas are offline or unreachable.
+ */
+export async function queryTransactionLogRead<T extends import("pg").QueryResultRow = any>(
+  text: string,
+  params?: unknown[],
+): Promise<import("pg").QueryResult<T>> {
+  if (!text.trim().toUpperCase().startsWith("SELECT")) {
+    // If not a read-only query, route directly to primary write pool
+    return queryWrite<T>(text, params);
+  }
+  return queryRead<T>(text, params);
 }
 
 /**

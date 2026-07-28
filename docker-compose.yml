@@ -35,6 +35,12 @@ services:
       SERVICE_NAME: ${SERVICE_NAME:-mobile-money-api}
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks:
       - mobilemoney_net
     logging:
@@ -128,6 +134,30 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./logging/promtail-config.yaml:/etc/promtail/config.yml
     command: -config.file=/etc/promtail/config.yml
+    networks:
+      - mobilemoney_net
+
+  resource-profiler:
+    image: alpine:latest
+    container_name: mobilemoney_resource_profiler
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./scripts:/scripts:ro
+    command: ["/bin/sh", "-c", "apk add --no-cache bash docker-cli curl && bash /scripts/checkResources.sh"]
+    networks:
+      - mobilemoney_net
+
+  load-balancer:
+    image: nginx:alpine
+    container_name: mobilemoney_load_balancer
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app
     networks:
       - mobilemoney_net
 

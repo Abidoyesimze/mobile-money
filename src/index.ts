@@ -1,3 +1,6 @@
+// Bootstrap vault secrets first
+import "./config/vault";
+
 import logger from "./utils/logger";
 // Initialize centralized configuration first
 import "./config/init";
@@ -8,7 +11,6 @@ import express, { NextFunction, Request, Response } from "express";
 import { IncomingMessage, Server } from "http";
 import compression from "compression";
 import dotenv from "dotenv";
-import helmet from "helmet";
 import axios from "axios";
 import * as Sentry from "@sentry/node";
 import http2 from "http2";
@@ -59,7 +61,6 @@ import {
 import { requireAuth } from "./middleware/auth";
 import { responseTime } from "./middleware/responseTime";
 import { requestId } from "./middleware/requestId";
-import { createCorsMiddleware } from "./middleware/cors";
 import { readReplicaRoutingMiddleware } from "./middleware/readReplicaRouting";
 import { dbConnectionLeakDetector } from "./middleware/dbConnectionLeakDetector";
 import { i18nMiddleware } from "./utils/i18n";
@@ -96,8 +97,8 @@ import exchangeRateBufferRoutes from "./routes/exchangeRateBuffers";
 import adminAssetRoutes from "./routes/admin/assets";
 import settingsRoutes from "./routes/settings";
 import { statementsRoutes } from "./routes/statements";
-import { paymentLinkRoutes } from "./routes/paymentLinkRoutes.js";
-import { SEP24_INTERACTIVE_HTML } from "./services/sep24InteractivePage.js";
+import { paymentLinkRoutes } from "./routes/paymentLinkRoutes";
+import { SEP24_INTERACTIVE_HTML } from "./services/sep24InteractivePage";
 import providerStatusRouter from "./routes/providerStatus";
 import adminControllerRouter from "./controllers/adminController";
 import {
@@ -113,6 +114,7 @@ import { WebSocketManager } from "./websocket";
 import { layeredCache } from "./services/layeredCache";
 import { ERROR_CODES } from "./constants/errorCodes";
 import { startApolloServer } from "./graphql/server";
+import { applySecurityMiddleware } from "./config/express";
 
 dotenv.config();
 
@@ -156,9 +158,9 @@ app.use(sentryBreadcrumbMiddleware);
 
 app.use(metricsMiddleware);
 app.use(tracingMetricsMiddleware);
+// Helmet, CORS, and related security headers are applied inside
+// applySecurityMiddleware() imported from "./config/express".
 applySecurityMiddleware(app);
-app.use(helmet());
-app.use(createCorsMiddleware());
 
 // Compression middleware
 if (process.env.COMPRESSION_ENABLED !== "false") {
@@ -660,10 +662,12 @@ async function initializeRuntime(): Promise<void> {
       scheduleProviderBalanceAlertJob,
       startAccountingTokenRefreshWorker,
       startWebhookRetryWorker,
+      startRefundWorker,
     } = await import("./queue/index.js");
     startProviderBalanceAlertWorker();
     startAccountingTokenRefreshWorker();
     startWebhookRetryWorker();
+    startRefundWorker();
     await scheduleProviderBalanceAlertJob();
     console.log("Provider balance alert queue initialized");
   } catch (err) {
@@ -701,7 +705,7 @@ async function initializeRuntime(): Promise<void> {
 
     // Start Apollo Server with APQ enabled (must run after HTTP server is created)
     await startApolloServer(app, server);
-    console.log("Apollo GraphQL server started at /graphql");
+    console.log("Apollo GraphQL server started at /graphql with Redis APQ");
   }
 }
 

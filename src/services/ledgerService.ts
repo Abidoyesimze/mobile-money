@@ -436,6 +436,52 @@ export class LedgerService {
   }
 
   /**
+   * Post an automatic refund for a permanently failed telecom payout.
+   * The entries restore the user's wallet balance and record the blockchain
+   * refund hash in metadata for later reconciliation.
+   */
+  async postWithdrawalRefund(
+    amount: number,
+    referenceNumber: string,
+    transactionId: string,
+    userId: string,
+    reason: string,
+    refundHash?: string,
+  ): Promise<PostedEntry[]> {
+    const refundReference = `REFUND-${referenceNumber}`;
+    const entries: LedgerEntry[] = [
+      {
+        account_code: "1100", // Mobile Money Float
+        debit_amount: amount,
+        description: "Failed payout funds returned",
+        metadata: {
+          originalReferenceNumber: referenceNumber,
+          reason,
+          refundHash,
+        },
+      },
+      {
+        account_code: "2000", // Customer Balances
+        credit_amount: amount,
+        description: "Customer wallet refund credited",
+        metadata: {
+          originalReferenceNumber: referenceNumber,
+          reason,
+          refundHash,
+        },
+      },
+    ];
+
+    return this.postTransaction(
+      refundReference,
+      `Failed payout refund: ${amount} - Reason: ${reason}`,
+      entries,
+      transactionId,
+      userId,
+    );
+  }
+
+  /**
    * Post a clawback transaction (reversal due to fraud)
    * Debit: Customer Balances (liability decreases)
    * Credit: Mobile Money Float (asset decreases)
