@@ -28,7 +28,7 @@ import logger from "../utils/logger";
 const QuoteRequestSchema = z.object({
   /** Amount in the source currency */
   amount: z
-    .number({ required_error: "amount is required" })
+    .number({ message: "amount is required" })
     .positive("amount must be positive"),
   /** Source currency code */
   from: z.string().min(3).max(3).toUpperCase(),
@@ -53,7 +53,7 @@ const SpreadPreviewSchema = z.object({
 
 const AirtelFeeQuoteSchema = z.object({
   amount: z
-    .number({ required_error: "amount is required" })
+    .number({ message: "amount is required" })
     .nonnegative("amount must not be negative"),
 });
 

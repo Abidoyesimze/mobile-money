@@ -7,6 +7,7 @@ import { UserModel } from "../models/users";
 import { createError } from "../middleware/errorHandler";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { validateExpiryDate } from "../utils/validators";
+import { getPepCheckService } from "../services/compliance/pepCheck";
 import {
   commit,
   commitWithBlinding,
@@ -69,11 +70,11 @@ const UploadDocumentSchema = z
       data.expirationDate;
 
     if (rawDate !== undefined && rawDate !== null && rawDate !== "") {
-      const validation = validateExpiryDate(rawDate);
-      if (!validation.isValid) {
+      const isValid = validateExpiryDate(rawDate);
+      if (!isValid) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: validation.error || "Invalid expiry date",
+          message: "Invalid expiry date",
           path: [
             data.expiry_date
               ? "expiry_date"

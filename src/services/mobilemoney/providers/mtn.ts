@@ -64,13 +64,9 @@ export interface BatchPayoutResult {
 }
 
 export class MTNProvider extends BaseProvider {
-  private readonly subscriptionKey: string;
-  private readonly environment: string;
-  private apiKey: string;
-  private apiSecret: string;
-  private subscriptionKey: string;
-  private baseUrl = "https://sandbox.momodeveloper.mtn.com";
-  private environment: string;
+  protected readonly subscriptionKey: string;
+  protected readonly environment: string;
+  protected override baseUrl = "https://sandbox.momodeveloper.mtn.com";
 
   constructor() {
     const config = buildConfig();

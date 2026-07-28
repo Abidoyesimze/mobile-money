@@ -156,7 +156,7 @@ async function processRefundJob(
     },
   });
 
-  await notifyTransactionWebhook(transactionId, "transaction.refunded", {
+  await notifyTransactionWebhook(transactionId, "transaction.refunded" as any, {
     transactionModel,
     webhookService,
   });

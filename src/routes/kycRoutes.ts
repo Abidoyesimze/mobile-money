@@ -1,4 +1,5 @@
 import logger from "../utils/logger";
+import { validateExpiryDate } from "../utils/validators";
 import { NextFunction, Router } from "express";
 import { Pool } from "pg";
 import { KYCController } from "../controllers/kycController";
@@ -142,14 +143,12 @@ export const createKYCRoutes = (db: Pool): Router => {
           rawExpiryDate !== null &&
           rawExpiryDate !== ""
         ) {
-          const expiryValidation = validateExpiryDate(rawExpiryDate);
-          if (!expiryValidation.isValid) {
+          const isValidExpiry = validateExpiryDate(rawExpiryDate);
+          if (!isValidExpiry) {
             throw createError(
               ERROR_CODES.INVALID_INPUT,
-              expiryValidation.error || "Invalid expiry date",
-              {
-                error: expiryValidation.error || "Invalid expiry date",
-              },
+              "Invalid expiry date",
+              { error: "Invalid expiry date" }
             );
           }
         }

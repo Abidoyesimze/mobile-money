@@ -96,15 +96,7 @@ export function tracingMetricsMiddleware(
       httpRequestErrorsTotal.inc(labels);
     }
 
-    if (trace_id) {
-      // Attach exemplar so Prometheus can link this bucket to the live trace
-      httpRequestDuration.observe(
-        { labels, exemplarLabels: { traceID: trace_id, spanID: span_id } },
-        durationSeconds,
-      );
-    } else {
-      httpRequestDuration.observe(labels, durationSeconds);
-    }
+    httpRequestDuration.observe(labels, durationSeconds);
   });
 
   next();
