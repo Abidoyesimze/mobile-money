@@ -182,7 +182,7 @@
     "supports-color": "^10.2.2",
     "twilio": "^6.0.2",
     "ua-parser-js": "^2.0.9",
-    "uuid": "^9.0.0",
+    "uuid": "^9.0.1",
     "winston": "^3.11.0",
     "winston-daily-rotate-file": "^5.0.0",
     "ws": "^8.18.0",

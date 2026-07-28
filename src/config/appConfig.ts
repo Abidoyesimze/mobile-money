@@ -86,6 +86,56 @@ export const configSchema = convict({
         env: "MTN_CALLBACK_SIGNATURE_HEADER",
       },
     },
+    mtnUganda: {
+      minAmount: {
+        doc: "Minimum transaction amount for MTN Uganda (UGX)",
+        format: "nat",
+        default: 500,
+        env: "MTN_UG_MIN_AMOUNT",
+      },
+      maxAmount: {
+        doc: "Maximum transaction amount for MTN Uganda (UGX)",
+        format: "nat",
+        default: 5000000,
+        env: "MTN_UG_MAX_AMOUNT",
+      },
+      baseUrl: {
+        doc: "Base URL for MTN Uganda MoMo API",
+        format: String,
+        default: "https://sandbox.momodeveloper.mtn.com",
+        env: "MTN_UG_BASE_URL",
+      },
+      environment: {
+        doc: "MTN Uganda API Environment (sandbox or mtnuganda)",
+        format: String,
+        default: "sandbox",
+        env: "MTN_UG_ENVIRONMENT",
+      },
+      subscriptionKey: {
+        doc: "Subscription key for the MTN Uganda Disbursement API",
+        format: String,
+        default: "",
+        env: "MTN_UG_DISBURSEMENT_SUB_KEY",
+      },
+      apiUser: {
+        doc: "UUID generated for MTN Uganda API User",
+        format: String,
+        default: "",
+        env: "MTN_UG_API_USER",
+      },
+      apiKey: {
+        doc: "API Key generated during MTN Uganda provisioning",
+        format: String,
+        default: "",
+        env: "MTN_UG_API_KEY",
+      },
+      currency: {
+        doc: "Currency code for MTN Uganda",
+        format: String,
+        default: "UGX",
+        env: "MTN_UG_CURRENCY",
+      },
+    },
     airtel: {
       minAmount: {
         doc: "Minimum transaction amount for Airtel (XAF)",
@@ -348,10 +398,10 @@ export const configSchema = convict({
       default: 60000, // 1 minute
     },
     requestTimeoutMs: {
-      doc: 'Orange API request timeout in milliseconds',
-      format: 'nat',
+      doc: "Orange API request timeout in milliseconds",
+      format: "nat",
       default: 30000,
-      env: 'ORANGE_REQUEST_TIMEOUT_MS',
+      env: "ORANGE_REQUEST_TIMEOUT_MS",
     },
   },
 
@@ -459,22 +509,22 @@ export const configSchema = convict({
   // Response compression
   compression: {
     enabled: {
-      doc: 'Enable HTTP response compression',
+      doc: "Enable HTTP response compression",
       format: Boolean,
       default: true,
-      env: 'COMPRESSION_ENABLED',
+      env: "COMPRESSION_ENABLED",
     },
     threshold: {
-      doc: 'Minimum response size in bytes to trigger compression',
-      format: 'nat',
+      doc: "Minimum response size in bytes to trigger compression",
+      format: "nat",
       default: 1024,
-      env: 'COMPRESSION_THRESHOLD',
+      env: "COMPRESSION_THRESHOLD",
     },
     level: {
-      doc: 'Gzip compression level (0-9) used by zlib',
-      format: 'nat',
+      doc: "Gzip compression level (0-9) used by zlib",
+      format: "nat",
       default: 6,
-      env: 'COMPRESSION_LEVEL',
+      env: "COMPRESSION_LEVEL",
     },
   },
 
