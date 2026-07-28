@@ -11,6 +11,30 @@ type SentinelNode = {
   port: number;
 };
 
+const localFallbackCache: Array<{ key: string; value: string }> = [];
+let isRedisClusterOffline = false;
+
+function getLocalCache(key: string): string | null {
+  const item = localFallbackCache.find(c => c.key === key);
+  return item ? item.value : null;
+}
+
+function setLocalCache(key: string, value: string): void {
+  const item = localFallbackCache.find(c => c.key === key);
+  if (item) {
+    item.value = value;
+  } else {
+    localFallbackCache.push({ key, value });
+  }
+}
+
+function delLocalCache(key: string): void {
+  const index = localFallbackCache.findIndex(c => c.key === key);
+  if (index !== -1) {
+    localFallbackCache.splice(index, 1);
+  }
+}
+
 const DEFAULT_REDIS_URL = "redis://localhost:6379";
 const BASE_REDIS_URL = process.env.REDIS_URL || DEFAULT_REDIS_URL;
 const SENTINEL_MASTER_NAME =
@@ -272,6 +296,10 @@ async function handleClusterRedirection(host: string, port: number): Promise<voi
 
 redisClient.on("error", (err) => {
   logger.error("Redis Client Error:", err);
+  if (!isRedisClusterOffline) {
+    logger.warn("Redis cluster status: offline, falling back to local array caches.");
+    isRedisClusterOffline = true;
+  }
   if (SENTINEL_ENABLED && /READONLY/i.test(String(err?.message || ""))) {
     void forceFailoverReconnect("redis:readonly");
   }
@@ -295,6 +323,10 @@ redisClient.on("connect", () => {
 
 redisClient.on("ready", () => {
   console.log("Redis: Ready");
+  if (isRedisClusterOffline) {
+    logger.warn("Redis cluster status: online, normal operation restored.");
+    isRedisClusterOffline = false;
+  }
   void verifyConnectedNodeRole();
 });
 
@@ -331,7 +363,49 @@ export async function disconnectRedis(): Promise<void> {
   }
 }
 
-export { redisClient };
+const proxyHandler: ProxyHandler<typeof redisClient> = {
+  get(target, prop, receiver) {
+    if (prop === "get") {
+      return async (...args: Parameters<typeof target.get>) => {
+        if (isRedisClusterOffline) return getLocalCache(args[0] as string);
+        try { return await target.get(...args); }
+        catch (e) { return getLocalCache(args[0] as string); }
+      };
+    }
+    if (prop === "set") {
+      return async (...args: Parameters<typeof target.set>) => {
+        if (isRedisClusterOffline) {
+          setLocalCache(args[0] as string, String(args[1]));
+          return "OK";
+        }
+        try { return await target.set(...args); }
+        catch (e) {
+          setLocalCache(args[0] as string, String(args[1]));
+          return "OK";
+        }
+      };
+    }
+    if (prop === "del") {
+      return async (...args: Parameters<typeof target.del>) => {
+        if (isRedisClusterOffline) {
+          const key = Array.isArray(args[0]) ? args[0][0] : args[0];
+          delLocalCache(key as string);
+          return 1;
+        }
+        try { return await target.del(...args); }
+        catch (e) {
+          const key = Array.isArray(args[0]) ? args[0][0] : args[0];
+          delLocalCache(key as string);
+          return 1;
+        }
+      };
+    }
+    return Reflect.get(target, prop, receiver);
+  }
+};
+
+const exportedRedisClient = new Proxy(redisClient, proxyHandler);
+export { exportedRedisClient as redisClient };
 
 export function createRedisStore() {
   return new RedisStore({
