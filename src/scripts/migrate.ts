@@ -256,6 +256,43 @@ async function migrateDown(): Promise<void> {
   }
 }
 
+async function migrateDryRun(): Promise<void> {
+  await ensureMigrationsTable();
+  const all = discoverMigrations();
+  await normalizeLegacyAppliedVersions(all);
+  const applied = await getAppliedVersions();
+  const pending = all.filter((m) => !applied.has(m.version));
+
+  if (pending.length === 0) {
+    console.log("No pending migrations to validate.");
+    return;
+  }
+
+  let errors = 0;
+  for (const migration of pending) {
+    const sql = fs.readFileSync(migration.upPath, "utf-8");
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(sql);
+      await client.query("ROLLBACK");
+      console.log(`  [VALID] ${migration.name}`);
+    } catch (err) {
+      await client.query("ROLLBACK");
+      printError(`  [INVALID] ${migration.name}:`, err);
+      errors++;
+    } finally {
+      client.release();
+    }
+  }
+
+  if (errors > 0) {
+    printError(`\n${errors} migration(s) failed validation.`);
+    process.exit(1);
+  }
+  console.log(`\nAll ${pending.length} pending migration(s) valid.`);
+}
+
 async function migrateStatus(): Promise<void> {
   await ensureMigrationsTable();
 
@@ -295,9 +332,12 @@ const command = process.argv[2];
       case "status":
         await migrateStatus();
         break;
+      case "dry-run":
+        await migrateDryRun();
+        break;
       default:
         printError(
-          `Unknown command: ${command ?? "(none)"}.\nUsage: migrate <up|down|status>`,
+          `Unknown command: ${command ?? "(none)"}.\nUsage: migrate <up|down|status|dry-run>`,
         );
         process.exit(1);
     }

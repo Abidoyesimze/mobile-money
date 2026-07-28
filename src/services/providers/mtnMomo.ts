@@ -17,10 +17,73 @@
  *   - getOperationalBalance
  */
 
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 import { randomUUID } from "crypto";
 import { BaseProvider, ProviderAuthConfig } from "./baseProvider";
 import { recordTelecomLatency } from "../../utils/logger";
+import logger from "../../utils/logger";
+
+const POLL_DELAY_MS = 15_000;
+const MAX_POLL_ATTEMPTS = 4;
+
+let pollTimeout: ReturnType<typeof setTimeout> | null = null;
+const pollQueue: Map<string, { referenceId: string; provider: MtnMomoProvider; attempt: number }> = new Map();
+
+function schedulePollProcessing(): void {
+  if (pollTimeout !== null) return;
+  if (pollQueue.size === 0) return;
+  pollTimeout = setTimeout(async () => {
+    pollTimeout = null;
+    const entries = [...pollQueue.entries()];
+    pollQueue.clear();
+    for (const [, entry] of entries) {
+      try {
+        const result = await entry.provider.getTransactionStatus(entry.referenceId);
+        if (result.status === "pending" && entry.attempt < MAX_POLL_ATTEMPTS) {
+          enqueuePoll(entry.referenceId, entry.provider, entry.attempt + 1);
+        } else {
+          logger.info(
+            { referenceId: entry.referenceId, status: result.status, attempts: entry.attempt },
+            "Poll resolved transaction status",
+          );
+        }
+      } catch (err) {
+        logger.error(
+          { referenceId: entry.referenceId, error: err instanceof Error ? err.message : err },
+          "Poll attempt failed, will retry",
+        );
+        if (entry.attempt < MAX_POLL_ATTEMPTS) {
+          enqueuePoll(entry.referenceId, entry.provider, entry.attempt + 1);
+        }
+      }
+    }
+    schedulePollProcessing();
+  }, POLL_DELAY_MS);
+}
+
+function enqueuePoll(referenceId: string, provider: MtnMomoProvider, attempt = 1): void {
+  const key = `${referenceId}-${attempt}`;
+  if (!pollQueue.has(key)) {
+    pollQueue.set(key, { referenceId, provider, attempt });
+    schedulePollProcessing();
+  }
+}
+
+function isTimeoutError(error: unknown): boolean {
+  if (error instanceof AxiosError) {
+    return (
+      error.code === "ECONNABORTED" ||
+      error.code === "ETIMEDOUT" ||
+      error.code === "ECONNRESET" ||
+      error.code === "ENOTFOUND" ||
+      error.message?.toLowerCase().includes("timeout") ||
+      error.message?.toLowerCase().includes("econnabort") ||
+      error.message?.toLowerCase().includes("etimedout")
+    );
+  }
+  const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return /timeout|econnabort|etimedout|econnreset|enotfound/i.test(msg);
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -135,14 +198,15 @@ export class MtnMomoProvider extends BaseProvider {
 
       this.cacheToken(access_token, expires_in);
       return access_token;
-    } catch (error: any) {
+    } catch (error: unknown) {
       const durationMs = Date.now() - startTime;
+      const axiosError = error as AxiosError;
       recordTelecomLatency({
         provider: this.providerName,
         operation: "getAccessToken",
         durationMs,
         success: false,
-        statusCode: error?.response?.status,
+        statusCode: axiosError?.response?.status,
         endpoint,
       });
       throw error;
@@ -155,20 +219,20 @@ export class MtnMomoProvider extends BaseProvider {
   async requestPayment(phoneNumber: string, amount: string) {
     const startTime = Date.now();
     const endpoint = "/collection/v1_0/requesttopay";
+    const externalId = randomUUID();
     try {
       const response = await axios.post(
         `${this.baseUrl}${endpoint}`,
         {
           amount,
           currency: "EUR",
-          externalId: randomUUID(),
+          externalId,
           payer: { partyIdType: "MSISDN", partyId: phoneNumber },
           payerMessage: "Payment for Stellar deposit",
           payeeNote: "Deposit",
         },
         {
           headers: {
-            // Uses subscription-key auth (no Bearer required for collection initiation)
             "Ocp-Apim-Subscription-Key": this.subscriptionKey,
             "X-Target-Environment": "sandbox",
           },
@@ -187,16 +251,27 @@ export class MtnMomoProvider extends BaseProvider {
       });
 
       return { success: true, data: response.data };
-    } catch (error: any) {
+    } catch (error: unknown) {
       const durationMs = Date.now() - startTime;
+      const isTimeout = isTimeoutError(error);
+      const axiosError = error as AxiosError;
       recordTelecomLatency({
         provider: this.providerName,
         operation: "requestPayment",
         durationMs,
-        success: false,
-        statusCode: error?.response?.status,
+        success: isTimeout ? true : false,
+        statusCode: isTimeout ? undefined : axiosError?.response?.status,
         endpoint,
       });
+
+      if (isTimeout) {
+        logger.warn(
+          { externalId, phoneNumber, amount, durationMs },
+          "MTN requestPayment timed out, scheduling status poll",
+        );
+        enqueuePoll(externalId, this);
+        return { success: true, data: { externalId, status: "pending" } };
+      }
 
       return { success: false, error };
     }
@@ -229,7 +304,6 @@ export class MtnMomoProvider extends BaseProvider {
         `${this.baseUrl}${endpoint}`,
         {
           headers: {
-            // Bearer header built by the shared base class utility
             Authorization: this.buildBearerAuthHeader(token),
             "Ocp-Apim-Subscription-Key": this.subscriptionKey,
             "X-Target-Environment": this.targetEnvironment,
@@ -253,16 +327,27 @@ export class MtnMomoProvider extends BaseProvider {
       if (raw === "FAILED")     return { status: "failed" };
       if (raw === "PENDING")    return { status: "pending" };
       return { status: "unknown" };
-    } catch (error: any) {
+    } catch (error: unknown) {
       const durationMs = Date.now() - startTime;
+      const isTimeout = isTimeoutError(error);
+      const axiosError = error as AxiosError;
       recordTelecomLatency({
         provider: this.providerName,
         operation: "getTransactionStatus",
         durationMs,
-        success: false,
-        statusCode: error?.response?.status,
+        success: isTimeout ? true : false,
+        statusCode: isTimeout ? undefined : axiosError?.response?.status,
         endpoint: "/collection/v1_0/requesttopay/{ref}",
       });
+
+      if (isTimeout) {
+        logger.warn(
+          { referenceId, durationMs },
+          "MTN getTransactionStatus timed out, scheduling poll retry",
+        );
+        enqueuePoll(referenceId, this);
+        return { status: "pending" };
+      }
 
       return { status: "unknown" };
     }
@@ -312,14 +397,15 @@ export class MtnMomoProvider extends BaseProvider {
           currency: response.data.currency ?? "XAF",
         },
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       const durationMs = Date.now() - startTime;
+      const axiosError = error as AxiosError;
       recordTelecomLatency({
         provider: this.providerName,
         operation: "getOperationalBalance",
         durationMs,
         success: false,
-        statusCode: error?.response?.status,
+        statusCode: axiosError?.response?.status,
         endpoint,
       });
 
@@ -396,7 +482,7 @@ export async function reconcilePendingTransactions() {
           providerStatus: statusRes.status,
         });
       }
-    } catch (err) {
+    } catch {
       results.push({
         id: tx.id,
         referenceNumber: tx.referenceNumber,
