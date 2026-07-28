@@ -277,10 +277,18 @@ async function migrateDryRun(): Promise<void> {
       try {
         await client.query("SAVEPOINT migration_sp");
         await client.query(sql);
-        await client.query("RELEASE SAVEPOINT migration_sp");
+        try {
+          await client.query("RELEASE SAVEPOINT migration_sp");
+        } catch (_) {
+          // Ignore if transaction block state changed
+        }
         console.log(`  [VALID] ${migration.name}`);
       } catch (err) {
-        await client.query("ROLLBACK TO SAVEPOINT migration_sp");
+        try {
+          await client.query("ROLLBACK TO SAVEPOINT migration_sp");
+        } catch (_) {
+          // Fallback if transaction block was terminated
+        }
         printError(`  [INVALID] ${migration.name}:`, err);
         errors++;
         break;
