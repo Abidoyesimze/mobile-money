@@ -481,3 +481,102 @@ setInterval(loadProviderMaintenance, 60000);
 const btnRefreshFailover = document.getElementById("btn-refresh-failover");
 if (btnRefreshFailover)
   btnRefreshFailover.addEventListener("click", loadProviderMaintenance);
+
+// Compliance Overrides Dashboard (#1574)
+async function overrideKycDecision(applicantRecordId, overrideStatus) {
+  const token = window.prompt(
+    "Admin auth token required to override this KYC decision:",
+  );
+  if (!token) return;
+
+  const reason =
+    window.prompt(`Reason for marking as ${overrideStatus} (optional):`, "") ||
+    undefined;
+
+  try {
+    const res = await fetch(
+      `/api/admin/monitoring/compliance/overrides/${encodeURIComponent(applicantRecordId)}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ overrideStatus, reason }),
+      },
+    );
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert(`Failed to override decision: ${body.message || res.status}`);
+      return;
+    }
+
+    await loadComplianceOverrides();
+  } catch (err) {
+    alert(`Failed to override decision: ${err.message || "network error"}`);
+  }
+}
+
+function renderComplianceCard(a) {
+  const effectiveStatus = a.override_status || a.verification_status;
+  const statusClass =
+    effectiveStatus === "approved"
+      ? "failover-online"
+      : effectiveStatus === "rejected"
+        ? "failover-offline"
+        : "";
+  const overrideHtml = a.override_status
+    ? `<div class="failover-reason">Manually overridden to "${a.override_status}"${a.override_reason ? `: ${a.override_reason}` : ""}</div>`
+    : "";
+
+  const card = document.createElement("div");
+  card.className = `failover-card glass ${statusClass}`;
+  card.innerHTML = `
+    <div class="failover-provider-name">${a.phone_number || a.applicant_id}</div>
+    <div class="failover-status">${effectiveStatus}</div>
+    ${overrideHtml}
+    <button class="btn-toggle-provider" data-action="approved">Approve</button>
+    <button class="btn-toggle-provider" data-action="rejected">Reject</button>
+  `;
+  card
+    .querySelector('[data-action="approved"]')
+    .addEventListener("click", () => overrideKycDecision(a.id, "approved"));
+  card
+    .querySelector('[data-action="rejected"]')
+    .addEventListener("click", () => overrideKycDecision(a.id, "rejected"));
+  return card;
+}
+
+async function loadComplianceOverrides() {
+  const grid = document.getElementById("compliance-grid");
+  const updatedAt = document.getElementById("compliance-updated-at");
+  if (!grid) return;
+
+  try {
+    const res = await fetch("/api/admin/monitoring/compliance/overrides");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.success || !Array.isArray(data.applicants)) {
+      throw new Error("Unexpected response");
+    }
+
+    grid.innerHTML = "";
+    if (data.applicants.length === 0) {
+      grid.innerHTML = '<p class="failover-loading">No KYC applicants found.</p>';
+    } else {
+      data.applicants.forEach((a) => grid.appendChild(renderComplianceCard(a)));
+    }
+
+    if (updatedAt) updatedAt.textContent = new Date().toLocaleTimeString();
+  } catch (err) {
+    grid.innerHTML = '<p class="failover-loading">Failed to load compliance overrides.</p>';
+    if (updatedAt) updatedAt.textContent = "unavailable";
+  }
+}
+
+loadComplianceOverrides();
+
+const btnRefreshCompliance = document.getElementById("btn-refresh-compliance");
+if (btnRefreshCompliance)
+  btnRefreshCompliance.addEventListener("click", loadComplianceOverrides);
