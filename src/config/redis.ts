@@ -45,6 +45,31 @@ const SENTINEL_PASSWORD = process.env.REDIS_SENTINEL_PASSWORD;
 const SENTINEL_NODES = parseSentinelNodes(process.env.REDIS_SENTINELS);
 const SENTINEL_ENABLED = SENTINEL_NODES.length > 0;
 
+/**
+ * Loads Redis password/username from env and validates presence.
+ * Production must have a password set; local/dev may omit it but gets a warning.
+ */
+function loadRedisAuthConfig(): { username?: string; password?: string } {
+  const password = process.env.REDIS_PASSWORD?.trim();
+  const username = process.env.REDIS_USERNAME?.trim();
+
+  if (!password) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "Redis: REDIS_PASSWORD is required in production but was not set.",
+      );
+    }
+    logger.warn(
+      "Redis: REDIS_PASSWORD is not set — connecting without authentication. Only acceptable for local development.",
+    );
+    return {};
+  }
+
+  return { password, ...(username ? { username } : {}) };
+}
+
+const REDIS_AUTH = loadRedisAuthConfig();
+
 let activeRedisUrl = BASE_REDIS_URL;
 let masterRefreshInFlight: Promise<boolean> | null = null;
 let roleVerificationInFlight = false;
@@ -53,6 +78,7 @@ let sentinelSubscriber: ReturnType<typeof createClient> | null = null;
 
 const redisClient = createClient({
   url: activeRedisUrl,
+  ...REDIS_AUTH,
   socket: {
     reconnectStrategy: (retries, cause) => {
       if (SENTINEL_ENABLED) {
