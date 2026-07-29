@@ -199,6 +199,8 @@ SENDGRID_API_KEY=your_sendgrid_key
 TWILIO_ACCOUNT_SID=your_twilio_sid
 ```
 
+> Don't hand-type placeholder secrets. See [Generating Keys and Secrets](#generating-keys-and-secrets) for copy-paste `node` commands that generate real values for `JWT_SECRET`, `ADMIN_API_KEY`, `DB_ENCRYPTION_KEY`, and `PII_MASTER_KEY`.
+
 ### 3. Setup Database
 
 ```bash
@@ -520,6 +522,65 @@ Auto-flagging of suspicious transactions:
 * 24h total > 5,000,000 XAF
 * Rapid structuring (3+ mixed in 15 min)
 * Sanctions list screening on every transaction
+
+## 🔑 Generating Keys and Secrets
+
+Every secret in the `# Security` block of `.env.example` needs a real, high-entropy value before you run the app outside of local development. The snippets below use Node's built-in `crypto` module — no extra dependencies — and match how each key is consumed in code.
+
+### JWT Signing Keys
+
+JWTs are signed with `JWT_SECRET` (see [`src/auth/jwtKeys.ts`](src/auth/jwtKeys.ts)). Generate a 256-bit secret:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Copy the output into `.env`:
+
+```bash
+JWT_SECRET=<paste-generated-value-here>
+```
+
+For zero-downtime key rotation, the app also accepts a versioned `JWT_SECRETS` map plus an `ACTIVE_JWT_KEY_VERSION` pointer. Old versions stay valid for a 24-hour grace period so in-flight tokens don't break:
+
+```bash
+# Generate a second key the same way, then:
+JWT_SECRETS={"v1":"<existing-key>","v2":"<new-generated-key>"}
+ACTIVE_JWT_KEY_VERSION=v2
+```
+
+### Admin API Key
+
+Administrative endpoints accept a static key via the `X-API-Key` header, checked against `ADMIN_API_KEY` (see [`src/middleware/auth.ts`](src/middleware/auth.ts)). It's generated the same way user-scoped API keys are created in [`src/auth/apikeys.ts`](src/auth/apikeys.ts):
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+```bash
+ADMIN_API_KEY=<paste-generated-value-here>
+```
+
+The `.env.example` default (`dev-admin-key`) is for local development only — always replace it before deploying anywhere reachable outside your machine.
+
+### Database Encryption Keys
+
+PII fields (phone numbers, Stellar addresses, notes) are encrypted at rest with AES-256-GCM. The raw values of `DB_ENCRYPTION_KEY` and `PII_MASTER_KEY` aren't used directly as AES keys — they're key material fed through HKDF-SHA-256 to derive the actual per-field keys (see [`src/utils/encryption.ts`](src/utils/encryption.ts)). Any high-entropy string works; a random hex string is the simplest way to get one:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Generate **two separate values** — `PII_MASTER_KEY` must never equal `DB_ENCRYPTION_KEY`:
+
+```bash
+DB_ENCRYPTION_KEY=<paste-first-generated-value-here>
+PII_MASTER_KEY=<paste-second-generated-value-here>
+```
+
+For rotating an in-use encryption key without re-encrypting existing rows immediately, the app also supports a versioned `DB_ENCRYPTION_KEYS` JSON map (or individual `DB_ENCRYPTION_KEY_<VERSION>` variables) with an `ACTIVE_ENCRYPTION_KEY_VERSION` pointer, mirroring the JWT rotation pattern above.
+
+> **Never commit generated secrets to version control**, log them, or paste them into chat/tickets. Store production values in your secrets manager (see [`docs/SECRETS_MANAGEMENT.md`](docs/SECRETS_MANAGEMENT.md)) and inject them as environment variables at deploy time.
 
 ## 🏗️ Architecture
 
