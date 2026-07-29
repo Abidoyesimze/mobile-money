@@ -30,6 +30,7 @@ import { runRebalanceJobHandler } from "./rebalanceJob";
 import { startNotificationWorker } from "../workers/notificationWorker";
 import { runTravelRuleExportJob } from "../services/compliance/travelRuleExport";
 import { runDlqCleanupJob } from "../queue/dlq";
+import { runHighValueComplianceReportJob } from "./highValueComplianceReportJob";
 
 interface JobConfig {
   name: string;
@@ -193,6 +194,12 @@ const JOBS: JobConfig[] = [
     // Hourly - exports pending Travel Rule compliance records to regulatory reporting endpoints
     schedule: process.env.TRAVEL_RULE_EXPORT_CRON || "0 * * * *",
     handler: runTravelRuleExportJob,
+  },
+  {
+    name: "high-value-compliance-report",
+    // Hourly - backfills missing high-value compliance reports for eligible AML alerts
+    schedule: process.env.HIGH_VALUE_COMPLIANCE_REPORT_CRON || "15 * * * *",
+    handler: runHighValueComplianceReportJob,
   },
   {
     name: "dlq-cleanup",

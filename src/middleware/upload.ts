@@ -58,6 +58,17 @@ export const generateS3Key = (userId: string, filename: string): string => {
   return `kyc-documents/${year}/${month}/${userId}/${filename}`;
 };
 
+export const generateComplianceS3Key = (
+  userId: string,
+  filename: string,
+): string => {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+
+  return `admin/compliance-reports/${year}/${month}/${userId}/${filename}`;
+};
+
 /**
  * Multer memory storage configuration
  * Files are stored in memory temporarily before uploading to S3

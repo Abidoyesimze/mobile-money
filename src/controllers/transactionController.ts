@@ -17,7 +17,10 @@ import {
 } from "../config/providers";
 import type { TransactionJobData } from "../queue/transactionQueue";
 import { amlService } from "../services/aml";
-import { generateFlaggedTransactionComplianceReport } from "../services/complianceReportService";
+import {
+  generateFlaggedTransactionComplianceReport,
+  generateHighValueTransactionComplianceReport,
+} from "../services/complianceReportService";
 import { twoFactorWithdrawalService } from "../services/twoFactorWithdrawalService";
 import { totpService } from "../services/auth/totp";
 import {
@@ -319,6 +322,16 @@ async function applyPreDispatchAMLProfile(
           ? transaction.createdAt
           : new Date(transaction.createdAt),
       status: transaction.status,
+      currency: transaction.currency,
+      originalAmount:
+        transaction.originalAmount !== undefined && transaction.originalAmount !== null
+          ? Number(transaction.originalAmount)
+          : Number(transaction.amount),
+      convertedAmount:
+        transaction.convertedAmount !== undefined &&
+        transaction.convertedAmount !== null
+          ? Number(transaction.convertedAmount)
+          : null,
       locationMetadata: transaction.locationMetadata ?? null,
     });
 
@@ -373,6 +386,17 @@ async function monitorTransactionForAML(
           ? transaction.createdAt
           : new Date(transaction.createdAt),
       status: transaction.status,
+      currency: transaction.currency,
+      originalAmount:
+        transaction.originalAmount !== undefined && transaction.originalAmount !== null
+          ? Number(transaction.originalAmount)
+          : Number(transaction.amount),
+      convertedAmount:
+        transaction.convertedAmount !== undefined &&
+        transaction.convertedAmount !== null
+          ? Number(transaction.convertedAmount)
+          : null,
+      locationMetadata: transaction.locationMetadata ?? null,
     });
 
     if (!result.flagged || !result.alert) {
@@ -402,20 +426,59 @@ async function monitorTransactionForAML(
     ]);
 
     try {
-      const { pdfUrl } = await generateFlaggedTransactionComplianceReport(
-        transaction,
+      const highValueAssessment = amlService.isHighValueAlert(
+        {
+          id: transaction.id,
+          userId: transaction.userId,
+          type: transaction.type as import("../services/aml").AMLTransactionType,
+          amount,
+          createdAt:
+            transaction.createdAt instanceof Date
+              ? transaction.createdAt
+              : new Date(transaction.createdAt),
+          status: transaction.status,
+          currency: transaction.currency,
+          originalAmount:
+            transaction.originalAmount !== undefined &&
+            transaction.originalAmount !== null
+              ? Number(transaction.originalAmount)
+              : Number(transaction.amount),
+          convertedAmount:
+            transaction.convertedAmount !== undefined &&
+            transaction.convertedAmount !== null
+              ? Number(transaction.convertedAmount)
+              : null,
+          locationMetadata: transaction.locationMetadata ?? null,
+        },
         result.alert,
       );
 
+      const report = highValueAssessment
+        ? await generateHighValueTransactionComplianceReport(
+            transaction,
+            result.alert,
+            highValueAssessment,
+          )
+        : await generateFlaggedTransactionComplianceReport(
+            transaction,
+            result.alert,
+          );
+
       await transactionModel.patchMetadata(transaction.id, {
         complianceReport: {
-          pdfUrl,
+          pdfUrl: report.pdfUrl,
+          storageKey: report.storageKey ?? null,
+          template: report.template,
+          source: report.source,
+          templateVersion: report.templateVersion,
           generatedAt: new Date().toISOString(),
+          thresholdUsd: highValueAssessment?.thresholdUsd,
+          usdEquivalent: highValueAssessment?.usdEquivalent,
         },
       });
     } catch (error) {
       logger.error(
-        `Failed to generate flagged transaction compliance PDF for transaction ${transaction.id}:`,
+        `Failed to generate compliance report PDF for transaction ${transaction.id}:`,
         error,
       );
     }
