@@ -580,3 +580,99 @@ loadComplianceOverrides();
 const btnRefreshCompliance = document.getElementById("btn-refresh-compliance");
 if (btnRefreshCompliance)
   btnRefreshCompliance.addEventListener("click", loadComplianceOverrides);
+
+// Refund Status Inspection Portal (#1669)
+async function triggerRefund(transactionId) {
+  const token = window.prompt(
+    "Admin auth token required to trigger this refund:",
+  );
+  if (!token) return;
+
+  try {
+    const res = await fetch(`/api/admin/transactions/${encodeURIComponent(transactionId)}/refund`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const body = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      alert(`Failed to trigger refund: ${body.message || body.error || res.status}`);
+      return;
+    }
+
+    alert(`Refund processed: ${body.refundAmount ?? ""}`.trim());
+    await loadFailedTransactions();
+  } catch (err) {
+    alert(`Failed to trigger refund: ${err.message || "network error"}`);
+  }
+}
+
+function refundStatusLabel(t) {
+  if (t.refundStatus === "completed") return "Refunded";
+  if (t.refundStatus === "processing") return "Refund in progress";
+  if (t.refundStatus === "failed") return "Refund failed";
+  return "Not refunded";
+}
+
+function renderRefundRow(t) {
+  const statusClass =
+    t.refundStatus === "completed"
+      ? "failover-online"
+      : t.refundStatus === "failed"
+        ? "failover-offline"
+        : "";
+
+  const card = document.createElement("div");
+  card.className = `failover-card glass ${statusClass}`;
+  card.innerHTML = `
+    <div class="failover-provider-name">${t.referenceNumber}</div>
+    <div class="failover-status">${t.status} · ${t.provider}</div>
+    <div class="failover-reason">${t.phoneNumber} &nbsp;·&nbsp; Amount: ${t.amount}</div>
+    <div class="failover-reason" id="refund-status-${t.id}">${refundStatusLabel(t)}${t.refundReason ? `: ${t.refundReason}` : ""}</div>
+    <button class="btn-toggle-provider" data-action="refund" ${t.refundEligible ? "" : "disabled"}>
+      Trigger Refund
+    </button>
+  `;
+  const refundBtn = card.querySelector('[data-action="refund"]');
+  if (t.refundEligible) {
+    refundBtn.addEventListener("click", () => triggerRefund(t.id));
+  }
+  return card;
+}
+
+async function loadFailedTransactions() {
+  const grid = document.getElementById("refund-grid");
+  const updatedAt = document.getElementById("refund-updated-at");
+  if (!grid) return;
+
+  try {
+    const res = await fetch("/api/admin/monitoring/refunds/failed-transactions");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.success || !Array.isArray(data.transactions)) {
+      throw new Error("Unexpected response");
+    }
+
+    grid.innerHTML = "";
+    if (data.transactions.length === 0) {
+      grid.innerHTML = '<p class="failover-loading">No failed transactions found.</p>';
+    } else {
+      data.transactions.forEach((t) => grid.appendChild(renderRefundRow(t)));
+    }
+
+    if (updatedAt) updatedAt.textContent = new Date().toLocaleTimeString();
+  } catch (err) {
+    grid.innerHTML = '<p class="failover-loading">Failed to load failed transactions.</p>';
+    if (updatedAt) updatedAt.textContent = "unavailable";
+  }
+}
+
+loadFailedTransactions();
+
+const btnRefreshRefunds = document.getElementById("btn-refresh-refunds");
+if (btnRefreshRefunds)
+  btnRefreshRefunds.addEventListener("click", loadFailedTransactions);

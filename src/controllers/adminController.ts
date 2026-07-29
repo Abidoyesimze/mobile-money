@@ -13,6 +13,9 @@ import { ERROR_CODES } from "../constants/errorCodes";
 import { pool } from "../config/database";
 import { providerSettingsService } from "../services/providerSettingsService";
 import { AuthRequest } from "../middleware/auth";
+import { TransactionModel, TransactionStatus } from "../models/transaction";
+
+const transactionModel = new TransactionModel();
 
 // Ensure logs directory exists
 const LOGS_DIR = path.join(process.cwd(), "logs");
@@ -623,6 +626,64 @@ export const overrideKycDecisionHandler = async (
 };
 
 /**
+ * Controller: List failed transactions for the refund inspection portal,
+ * surfacing whether a refund has already been queued/completed for each one.
+ * Acceptance Criteria: Display failed transaction logs (#1669).
+ */
+export const getFailedTransactionsHandler = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const user = (req as AuthRequest).user;
+    if (!user || !isAdminRole(user.role)) {
+      throw createError(ERROR_CODES.FORBIDDEN, "Admin access required", {
+        message: "Admin access required",
+      });
+    }
+
+    const limit = Math.min(
+      Math.max(parseInt((req.query.limit as string) || "100", 10) || 100, 1),
+      500,
+    );
+
+    const transactions = await transactionModel.findByStatuses(
+      [TransactionStatus.Failed],
+      limit,
+    );
+
+    const failedTransactions = transactions.map((t: any) => {
+      const refund =
+        t.metadata && typeof t.metadata === "object" ? t.metadata.refund : null;
+
+      return {
+        id: t.id,
+        referenceNumber: t.referenceNumber,
+        type: t.type,
+        amount: t.amount,
+        phoneNumber: t.phoneNumber,
+        provider: t.provider,
+        status: t.status,
+        refundStatus: refund?.status ?? null,
+        refundReason: refund?.reason ?? null,
+        refundHash: refund?.hash ?? null,
+        refundCompletedAt: refund?.completedAt ?? null,
+        refundEligible:
+          t.type === "withdraw" && refund?.status !== "completed",
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+      };
+    });
+
+    res.json({ success: true, transactions: failedTransactions });
+  } catch (error) {
+    if ((error as any).status) throw error;
+    winstonOutageLogger.error("Failed to fetch failed transactions", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch failed transactions");
+  }
+};
+
+/**
  * Express Router mounting all monitoring dashboard endpoints
  */
 import { Router } from "express";
@@ -642,6 +703,7 @@ router.get("/sla", getSlaMetrics);
 router.get("/telecom-latency", getTelecomLatencyMetricsController);
 router.get("/compliance/overrides", getComplianceOverridesHandler);
 router.post("/compliance/overrides/:applicantRecordId", overrideKycDecisionHandler);
+router.get("/refunds/failed-transactions", getFailedTransactionsHandler);
 
 export default router;
 
