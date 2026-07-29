@@ -778,13 +778,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40404c3f5f511ec4da6fe866ddf6a717c309fdbb69fbbad7b0f3edab8f2e835f"
 
 [[package]]
-name = "fee_pool"
-version = "0.1.0"
-dependencies = [
- "soroban-sdk 26.0.1",
-]
-
-[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1134,6 +1127,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "oracle"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk 26.0.1",
+]
+
+[[package]]
 name = "p256"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1208,7 +1208,7 @@ dependencies = [
 name = "quicklendx-contracts"
 version = "0.1.0"
 dependencies = [
- "soroban-sdk 25.3.0",
+ "soroban-sdk 25.3.2",
 ]
 
 [[package]]
