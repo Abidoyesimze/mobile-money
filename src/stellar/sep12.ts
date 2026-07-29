@@ -13,7 +13,7 @@ const isoCountryCode = z
   .string()
   .refine(
     (val) => validateCountryCode(val).valid,
-    (val) => ({ message: `"${val}" is not a recognised ISO 3166-1 alpha-2 or alpha-3 country code` }),
+    { message: "Invalid ISO 3166-1 country code" },
   );
 import { ERROR_CODES } from "../constants/errorCodes";
 import { createError } from "../middleware/errorHandler";

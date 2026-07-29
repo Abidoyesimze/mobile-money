@@ -11,7 +11,12 @@
  * The refactored implementation makes exactly one token request per refresh.
  */
 
-import axios, { AxiosError, AxiosInstance } from "axios";
+import axios, {
+  AxiosInstance,
+  AxiosError,
+  AxiosRequestConfig,
+  AxiosResponse,
+} from "axios";
 import {
   BaseProvider,
   ProviderAuthConfig,
@@ -24,12 +29,6 @@ interface AirtelTokenResponse {
   expires_in: number;
   token_type?: string;
 }
-import axios, {
-  AxiosInstance,
-  AxiosError,
-  AxiosRequestConfig,
-  AxiosResponse,
-} from "axios";
 
 import logger from "../../../utils/logger";
 import { maskPII } from "../../../utils/masking";
@@ -268,7 +267,8 @@ export class AirtelService {
         lastError = err as Error;
         const axiosError = err as AxiosError;
         if (axiosError.response?.status === 401) {
-          this.invalidateToken();
+          (this as any).token = null;
+          (this as any).tokenExpiry = 0;
         }
 
         if (
@@ -535,78 +535,6 @@ export class AirtelService {
         providerResponseTimeMs: duration,
       };
     }
-  }
-
-  // ─── API operations ──────────────────────────────────────────────────────
-
-  async requestPayment(phoneNumber: string, amount: string) {
-    const token = await this.getAccessToken();
-    const reference = `AIRTEL-${Date.now()}`;
-
-    return this.withRetry(async () => {
-      try {
-        const response = await this.client.post<AirtelResponse>(
-          "/merchant/v1/payments/",
-          {
-            reference,
-            subscriber: {
-              country: process.env.AIRTEL_COUNTRY ?? "NG",
-              currency: process.env.AIRTEL_CURRENCY ?? "NGN",
-              msisdn: phoneNumber,
-            },
-            transaction: {
-              amount: parseFloat(amount),
-              country: process.env.AIRTEL_COUNTRY ?? "NG",
-              currency: process.env.AIRTEL_CURRENCY ?? "NGN",
-              id: reference,
-            },
-          },
-          {
-            headers: {
-              Authorization: this.buildBearerAuthHeader(token),
-              "X-Country": process.env.AIRTEL_COUNTRY ?? "NG",
-              "X-Currency": process.env.AIRTEL_CURRENCY ?? "NGN",
-            },
-          },
-        );
-
-        return { success: true, data: response.data };
-      } catch (error) {
-        return { success: false, error };
-      }
-    });
-  }
-
-  async sendPayout(phoneNumber: string, amount: string) {
-    const token = await this.getAccessToken();
-    const reference = `AIRTEL-PAYOUT-${Date.now()}`;
-
-    return this.withRetry(async () => {
-      try {
-        const response = await this.client.post<AirtelResponse>(
-          "/standard/v1/disbursements/",
-          {
-            reference,
-            payee: { msisdn: phoneNumber },
-            transaction: {
-              amount: parseFloat(amount),
-              id: reference,
-            },
-          },
-          {
-            headers: {
-              Authorization: this.buildBearerAuthHeader(token),
-              "X-Country": process.env.AIRTEL_COUNTRY ?? "NG",
-              "X-Currency": process.env.AIRTEL_CURRENCY ?? "NGN",
-            },
-          },
-        );
-
-        return { success: true, data: response.data };
-      } catch (error) {
-        return { success: false, error };
-      }
-    });
   }
   /**
    * =========================

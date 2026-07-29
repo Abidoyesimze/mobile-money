@@ -499,7 +499,7 @@ function ensureAuditLogDirectory(): void {
       fs.mkdirSync(AUDIT_LOG_DIR, { recursive: true });
     }
   } catch (err) {
-    logger.error("Failed to create audit log directory:", err);
+    logger.error({ err }, "Failed to create audit log directory:");
   }
 }
 
@@ -527,7 +527,7 @@ export function recordTelecomLatency(metric: TelecomLatencyMetric): void {
     const logLine = JSON.stringify(entry) + "\n";
     fs.appendFileSync(TELECOM_METRICS_LOG_FILE, logLine, "utf8");
   } catch (err) {
-    logger.error("Failed to write to telecom audit log file:", err);
+    logger.error({ err }, "Failed to write to telecom audit log file:");
   }
 
   relaxedLogger.info(
@@ -555,15 +555,13 @@ export function getTelecomAverageMetrics(
       const lines = fileContent.split("\n").filter((l) => l.trim().length > 0);
       records = lines.map((line) => JSON.parse(line));
     } catch (err) {
-      logger.error("Error reading telecom audit log file:", err);
+      logger.error({ err }, "Error reading telecom audit log file:");
     }
   }
 
   if (providerFilter) {
     const filterLower = providerFilter.toLowerCase();
-    records = records.filter(
-      (r) => r.provider.toLowerCase() === filterLower,
-    );
+    records = records.filter((r) => r.provider.toLowerCase() === filterLower);
   }
 
   const totalRequests = records.length;
@@ -628,7 +626,8 @@ export function getTelecomAverageMetrics(
       count: opRecords.length,
       successCount: opSuccess,
       errorCount: opError,
-      avgDurationMs: Math.round((opTotalDuration / opRecords.length) * 100) / 100,
+      avgDurationMs:
+        Math.round((opTotalDuration / opRecords.length) * 100) / 100,
       minDurationMs: opMin === Infinity ? 0 : Math.round(opMin * 100) / 100,
       maxDurationMs: opMax === -Infinity ? 0 : Math.round(opMax * 100) / 100,
     };
@@ -639,9 +638,12 @@ export function getTelecomAverageMetrics(
     totalRequests,
     successCount,
     errorCount,
-    overallAvgDurationMs: Math.round((totalDuration / totalRequests) * 100) / 100,
-    minDurationMs: minDurationMs === Infinity ? 0 : Math.round(minDurationMs * 100) / 100,
-    maxDurationMs: maxDurationMs === -Infinity ? 0 : Math.round(maxDurationMs * 100) / 100,
+    overallAvgDurationMs:
+      Math.round((totalDuration / totalRequests) * 100) / 100,
+    minDurationMs:
+      minDurationMs === Infinity ? 0 : Math.round(minDurationMs * 100) / 100,
+    maxDurationMs:
+      maxDurationMs === -Infinity ? 0 : Math.round(maxDurationMs * 100) / 100,
     operations,
   };
 }
@@ -652,4 +654,3 @@ export function getTelecomAverageMetrics(
 export function clearTelecomMetricsStore(): void {
   telecomLatencyStore.length = 0;
 }
-

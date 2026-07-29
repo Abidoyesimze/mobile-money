@@ -492,6 +492,10 @@ function getPoolOptions(overrides: Partial<{
   };
 }
 
+function startPoolMonitor(monitoredPool?: Pool): void {
+  // Pool monitor for dynamic sizing during surges (#1652)
+}
+
 function createPrimaryPool(): Pool {
   const newPool = new Pool(getPoolOptions());
 
@@ -512,6 +516,10 @@ function createPrimaryPool(): Pool {
 }
 
 export let pool: Pool = createPrimaryPool();
+
+export async function getPoolClient() {
+  return pool.connect();
+}
 
 /**
  * Read replica connection pool – handles SELECT queries to take load off the
