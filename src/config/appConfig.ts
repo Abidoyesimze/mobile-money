@@ -136,6 +136,62 @@ export const configSchema = convict({
         env: "MTN_UG_CURRENCY",
       },
     },
+    moovCoteDivoire: {
+      minAmount: {
+        doc: "Minimum transaction amount for Moov Côte d'Ivoire (XOF)",
+        format: "nat",
+        default: 100,
+        env: "MOOV_CI_MIN_AMOUNT",
+      },
+      maxAmount: {
+        doc: "Maximum transaction amount for Moov Côte d'Ivoire (XOF)",
+        format: "nat",
+        default: 1000000,
+        env: "MOOV_CI_MAX_AMOUNT",
+      },
+      baseUrl: {
+        doc: "Base URL for the Moov Côte d'Ivoire API",
+        format: String,
+        default: "",
+        env: "MOOV_CI_BASE_URL",
+      },
+      authPath: {
+        doc: "Path for acquiring a Moov Côte d'Ivoire access token",
+        format: String,
+        default: "/oauth/token",
+        env: "MOOV_CI_AUTH_PATH",
+      },
+      depositPushPath: {
+        doc: "Path for triggering a Moov Côte d'Ivoire deposit push",
+        format: String,
+        default: "/payments/deposit",
+        env: "MOOV_CI_DEPOSIT_PUSH_PATH",
+      },
+      apiKey: {
+        doc: "Client ID for the Moov Côte d'Ivoire API",
+        format: String,
+        default: "",
+        env: "MOOV_CI_API_KEY",
+      },
+      apiSecret: {
+        doc: "Client secret for the Moov Côte d'Ivoire API",
+        format: String,
+        default: "",
+        env: "MOOV_CI_API_SECRET",
+      },
+      currency: {
+        doc: "Currency code for Moov Côte d'Ivoire transactions",
+        format: ["XOF"],
+        default: "XOF",
+        env: "MOOV_CI_CURRENCY",
+      },
+      timeoutMs: {
+        doc: "HTTP timeout for Moov Côte d'Ivoire API requests",
+        format: "nat",
+        default: 10000,
+        env: "MOOV_CI_TIMEOUT_MS",
+      },
+    },
     airtel: {
       minAmount: {
         doc: "Minimum transaction amount for Airtel (XAF)",
