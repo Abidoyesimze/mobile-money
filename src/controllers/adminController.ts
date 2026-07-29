@@ -510,6 +510,119 @@ export const toggleProviderMaintenanceHandler = async (
 };
 
 /**
+ * Controller: List KYC applicant records for compliance review, including
+ * their automated verification_status and any existing manual override.
+ * Acceptance Criteria: Allow admin users to override automated KYC decisions
+ * manually after review (#1574).
+ */
+export const getComplianceOverridesHandler = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const user = (req as AuthRequest).user;
+    if (!user || !isAdminRole(user.role)) {
+      throw createError(ERROR_CODES.FORBIDDEN, "Admin access required", {
+        message: "Admin access required",
+      });
+    }
+
+    const result = await pool.query(
+      `SELECT
+         ka.id,
+         ka.user_id,
+         ka.applicant_id,
+         ka.provider,
+         ka.verification_status,
+         ka.kyc_level,
+         ka.override_status,
+         ka.override_reason,
+         ka.overridden_by,
+         ka.overridden_at,
+         ka.updated_at,
+         u.phone_number
+       FROM kyc_applicants ka
+       JOIN users u ON u.id = ka.user_id
+       ORDER BY ka.updated_at DESC
+       LIMIT 100`,
+    );
+
+    res.json({ success: true, applicants: result.rows });
+  } catch (error) {
+    if ((error as any).status) throw error;
+    winstonOutageLogger.error("Failed to fetch compliance overrides", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch compliance overrides");
+  }
+};
+
+/**
+ * Controller: Manually override an automated KYC decision.
+ * Acceptance Criteria: Limit override execution to admin role; update status
+ * successfully on override toggle click (#1574).
+ */
+export const overrideKycDecisionHandler = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const user = (req as AuthRequest).user;
+    if (!user || !isAdminRole(user.role)) {
+      throw createError(ERROR_CODES.FORBIDDEN, "Admin access required", {
+        message: "Admin access required",
+      });
+    }
+
+    const { applicantRecordId } = req.params;
+    const { overrideStatus, reason } = req.body;
+
+    if (!applicantRecordId) {
+      throw createError(ERROR_CODES.INVALID_INPUT, "applicantRecordId is required");
+    }
+    if (overrideStatus !== "approved" && overrideStatus !== "rejected") {
+      throw createError(
+        ERROR_CODES.INVALID_INPUT,
+        "overrideStatus must be 'approved' or 'rejected'",
+      );
+    }
+
+    // Manual override also becomes the effective verification_status so the
+    // rest of the system (limits, dashboards) reflects the reviewer's decision.
+    const result = await pool.query(
+      `UPDATE kyc_applicants
+       SET override_status = $1,
+           override_reason = $2,
+           overridden_by = $3,
+           overridden_at = NOW(),
+           verification_status = $1
+       WHERE id = $4
+       RETURNING id, applicant_id, verification_status, override_status,
+                 override_reason, overridden_by, overridden_at`,
+      [overrideStatus, reason ?? null, user.id, applicantRecordId],
+    );
+
+    if (result.rows.length === 0) {
+      throw createError(ERROR_CODES.NOT_FOUND, "KYC applicant record not found");
+    }
+
+    winstonOutageLogger.info("KYC_DECISION_MANUALLY_OVERRIDDEN", {
+      applicantRecordId,
+      overrideStatus,
+      overriddenBy: user.id,
+    });
+
+    res.json({
+      success: true,
+      message: `KYC decision overridden to ${overrideStatus}`,
+      applicant: result.rows[0],
+    });
+  } catch (error) {
+    if ((error as any).status) throw error;
+    winstonOutageLogger.error("Failed to override KYC decision", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to override KYC decision");
+  }
+};
+
+/**
  * Express Router mounting all monitoring dashboard endpoints
  */
 import { Router } from "express";
@@ -527,6 +640,8 @@ router.post("/circuit-breaker/reset", resetCircuitBreakerHandler);
 router.post("/circuit-breaker/trip", tripCircuitBreakerHandler);
 router.get("/sla", getSlaMetrics);
 router.get("/telecom-latency", getTelecomLatencyMetricsController);
+router.get("/compliance/overrides", getComplianceOverridesHandler);
+router.post("/compliance/overrides/:applicantRecordId", overrideKycDecisionHandler);
 
 export default router;
 
