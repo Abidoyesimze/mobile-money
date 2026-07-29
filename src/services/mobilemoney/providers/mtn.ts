@@ -50,9 +50,6 @@ function buildConfig(): ProviderAuthConfig & {
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
-export class MTNProvider extends BaseProvider {
-  private readonly subscriptionKey: string;
-  private readonly environment: string;
 export interface BatchPayoutItem {
   referenceId: string;
   phoneNumber: string;
@@ -66,12 +63,10 @@ export interface BatchPayoutResult {
   providerReference?: string;
 }
 
-export class MTNProvider {
-  private apiKey: string;
-  private apiSecret: string;
-  private subscriptionKey: string;
-  private baseUrl = "https://sandbox.momodeveloper.mtn.com";
-  private environment: string;
+export class MTNProvider extends BaseProvider {
+  protected readonly subscriptionKey: string;
+  protected readonly environment: string;
+  protected override baseUrl = "https://sandbox.momodeveloper.mtn.com";
 
   constructor() {
     const config = buildConfig();

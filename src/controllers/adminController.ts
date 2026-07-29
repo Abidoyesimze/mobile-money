@@ -11,6 +11,11 @@ import {
 import { createError } from "../middleware/errorHandler";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { pool } from "../config/database";
+import { providerSettingsService } from "../services/providerSettingsService";
+import { AuthRequest } from "../middleware/auth";
+import { TransactionModel, TransactionStatus } from "../models/transaction";
+
+const transactionModel = new TransactionModel();
 
 // Ensure logs directory exists
 const LOGS_DIR = path.join(process.cwd(), "logs");
@@ -399,6 +404,285 @@ export const getSlaMetrics = async (_req: Request, res: Response): Promise<void>
   }
 };
 
+import { getTelecomAverageMetrics } from "../utils/logger";
+
+export const getTelecomLatencyMetricsController = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const provider = req.query.provider as string | undefined;
+    const metrics = getTelecomAverageMetrics(provider);
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      data: metrics,
+    });
+  } catch (error) {
+    winstonOutageLogger.error("Failed to fetch telecom latency metrics", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch telecom latency metrics");
+  }
+};
+
+/**
+ * Controller: List manual failover (enable/disable) state for every provider.
+ * Acceptance Criteria: Display current provider state indicators on screen (#1550).
+ */
+export const getProviderMaintenanceState = async (
+  _req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const settings = await providerSettingsService.getAllSettings();
+
+    res.json({
+      success: true,
+      providers: settings.map((s) => ({
+        provider: s.provider_name,
+        enabled: s.is_enabled ?? true,
+        disabledReason: s.disabled_reason ?? null,
+        disabledBy: s.disabled_by ?? null,
+        disabledAt: s.disabled_at ?? null,
+      })),
+    });
+  } catch (error) {
+    winstonOutageLogger.error("Failed to fetch provider maintenance state", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch provider maintenance state");
+  }
+};
+
+const isAdminRole = (role?: string) => role === "admin" || role === "super-admin";
+
+/**
+ * Controller: Manually toggle a provider offline/online for unscheduled maintenance.
+ * Acceptance Criteria: Expose administrative endpoints protecting toggle routes
+ * with permissions; save state selections to database config variables (#1550).
+ */
+export const toggleProviderMaintenanceHandler = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const user = (req as AuthRequest).user;
+    if (!user || !isAdminRole(user.role)) {
+      throw createError(ERROR_CODES.FORBIDDEN, "Admin access required", {
+        message: "Admin access required",
+      });
+    }
+
+    const { provider } = req.params;
+    const { enabled, reason } = req.body;
+
+    if (!provider || typeof provider !== "string") {
+      throw createError(ERROR_CODES.INVALID_INPUT, "Provider is required");
+    }
+    if (typeof enabled !== "boolean") {
+      throw createError(ERROR_CODES.INVALID_INPUT, "enabled (boolean) is required");
+    }
+
+    const updated = await providerSettingsService.setProviderEnabled(
+      provider,
+      enabled,
+      user.id,
+      reason ?? null,
+    );
+
+    winstonOutageLogger.info("PROVIDER_MAINTENANCE_TOGGLED", {
+      provider: updated.provider_name,
+      enabled: updated.is_enabled,
+      updatedBy: user.id,
+      reason: updated.disabled_reason,
+    });
+
+    res.json({
+      success: true,
+      message: `Provider ${provider} ${enabled ? "enabled" : "disabled"}`,
+      provider: {
+        provider: updated.provider_name,
+        enabled: updated.is_enabled ?? true,
+        disabledReason: updated.disabled_reason ?? null,
+        disabledBy: updated.disabled_by ?? null,
+        disabledAt: updated.disabled_at ?? null,
+      },
+    });
+  } catch (error) {
+    if ((error as any).status) throw error;
+    winstonOutageLogger.error("Failed to toggle provider maintenance state", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to toggle provider maintenance state");
+  }
+};
+
+/**
+ * Controller: List KYC applicant records for compliance review, including
+ * their automated verification_status and any existing manual override.
+ * Acceptance Criteria: Allow admin users to override automated KYC decisions
+ * manually after review (#1574).
+ */
+export const getComplianceOverridesHandler = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const user = (req as AuthRequest).user;
+    if (!user || !isAdminRole(user.role)) {
+      throw createError(ERROR_CODES.FORBIDDEN, "Admin access required", {
+        message: "Admin access required",
+      });
+    }
+
+    const result = await pool.query(
+      `SELECT
+         ka.id,
+         ka.user_id,
+         ka.applicant_id,
+         ka.provider,
+         ka.verification_status,
+         ka.kyc_level,
+         ka.override_status,
+         ka.override_reason,
+         ka.overridden_by,
+         ka.overridden_at,
+         ka.updated_at,
+         u.phone_number
+       FROM kyc_applicants ka
+       JOIN users u ON u.id = ka.user_id
+       ORDER BY ka.updated_at DESC
+       LIMIT 100`,
+    );
+
+    res.json({ success: true, applicants: result.rows });
+  } catch (error) {
+    if ((error as any).status) throw error;
+    winstonOutageLogger.error("Failed to fetch compliance overrides", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch compliance overrides");
+  }
+};
+
+/**
+ * Controller: Manually override an automated KYC decision.
+ * Acceptance Criteria: Limit override execution to admin role; update status
+ * successfully on override toggle click (#1574).
+ */
+export const overrideKycDecisionHandler = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const user = (req as AuthRequest).user;
+    if (!user || !isAdminRole(user.role)) {
+      throw createError(ERROR_CODES.FORBIDDEN, "Admin access required", {
+        message: "Admin access required",
+      });
+    }
+
+    const { applicantRecordId } = req.params;
+    const { overrideStatus, reason } = req.body;
+
+    if (!applicantRecordId) {
+      throw createError(ERROR_CODES.INVALID_INPUT, "applicantRecordId is required");
+    }
+    if (overrideStatus !== "approved" && overrideStatus !== "rejected") {
+      throw createError(
+        ERROR_CODES.INVALID_INPUT,
+        "overrideStatus must be 'approved' or 'rejected'",
+      );
+    }
+
+    // Manual override also becomes the effective verification_status so the
+    // rest of the system (limits, dashboards) reflects the reviewer's decision.
+    const result = await pool.query(
+      `UPDATE kyc_applicants
+       SET override_status = $1,
+           override_reason = $2,
+           overridden_by = $3,
+           overridden_at = NOW(),
+           verification_status = $1
+       WHERE id = $4
+       RETURNING id, applicant_id, verification_status, override_status,
+                 override_reason, overridden_by, overridden_at`,
+      [overrideStatus, reason ?? null, user.id, applicantRecordId],
+    );
+
+    if (result.rows.length === 0) {
+      throw createError(ERROR_CODES.NOT_FOUND, "KYC applicant record not found");
+    }
+
+    winstonOutageLogger.info("KYC_DECISION_MANUALLY_OVERRIDDEN", {
+      applicantRecordId,
+      overrideStatus,
+      overriddenBy: user.id,
+    });
+
+    res.json({
+      success: true,
+      message: `KYC decision overridden to ${overrideStatus}`,
+      applicant: result.rows[0],
+    });
+  } catch (error) {
+    if ((error as any).status) throw error;
+    winstonOutageLogger.error("Failed to override KYC decision", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to override KYC decision");
+  }
+};
+
+/**
+ * Controller: List failed transactions for the refund inspection portal,
+ * surfacing whether a refund has already been queued/completed for each one.
+ * Acceptance Criteria: Display failed transaction logs (#1669).
+ */
+export const getFailedTransactionsHandler = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const user = (req as AuthRequest).user;
+    if (!user || !isAdminRole(user.role)) {
+      throw createError(ERROR_CODES.FORBIDDEN, "Admin access required", {
+        message: "Admin access required",
+      });
+    }
+
+    const limit = Math.min(
+      Math.max(parseInt((req.query.limit as string) || "100", 10) || 100, 1),
+      500,
+    );
+
+    const transactions = await transactionModel.findByStatuses(
+      [TransactionStatus.Failed],
+      limit,
+    );
+
+    const failedTransactions = transactions.map((t: any) => {
+      const refund =
+        t.metadata && typeof t.metadata === "object" ? t.metadata.refund : null;
+
+      return {
+        id: t.id,
+        referenceNumber: t.referenceNumber,
+        type: t.type,
+        amount: t.amount,
+        phoneNumber: t.phoneNumber,
+        provider: t.provider,
+        status: t.status,
+        refundStatus: refund?.status ?? null,
+        refundReason: refund?.reason ?? null,
+        refundHash: refund?.hash ?? null,
+        refundCompletedAt: refund?.completedAt ?? null,
+        refundEligible:
+          t.type === "withdraw" && refund?.status !== "completed",
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+      };
+    });
+
+    res.json({ success: true, transactions: failedTransactions });
+  } catch (error) {
+    if ((error as any).status) throw error;
+    winstonOutageLogger.error("Failed to fetch failed transactions", { error });
+    throw createError(ERROR_CODES.INTERNAL_ERROR, "Failed to fetch failed transactions");
+  }
+};
+
 /**
  * Express Router mounting all monitoring dashboard endpoints
  */
@@ -416,5 +700,10 @@ router.get("/logs", getOutageLogs);
 router.post("/circuit-breaker/reset", resetCircuitBreakerHandler);
 router.post("/circuit-breaker/trip", tripCircuitBreakerHandler);
 router.get("/sla", getSlaMetrics);
+router.get("/telecom-latency", getTelecomLatencyMetricsController);
+router.get("/compliance/overrides", getComplianceOverridesHandler);
+router.post("/compliance/overrides/:applicantRecordId", overrideKycDecisionHandler);
+router.get("/refunds/failed-transactions", getFailedTransactionsHandler);
 
 export default router;
+

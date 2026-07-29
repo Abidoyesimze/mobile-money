@@ -42,6 +42,24 @@ function registerMocks(opts: {
 
   jest.mock("../../src/queue/config", () => ({ queueOptions: {} }));
 
+  jest.mock("../../src/config/database", () => ({
+    pool: { query: jest.fn().mockResolvedValue({ rows: [] }) },
+  }));
+
+  jest.mock("../../src/tracer", () => ({
+    __esModule: true,
+    default: {
+      startSpan: jest.fn(() => ({
+        setTag: jest.fn(),
+        finish: jest.fn(),
+        context: jest.fn(() => ({})),
+      })),
+      scope: jest.fn(() => ({
+        activate: jest.fn((_: unknown, work: () => Promise<unknown>) => work()),
+      })),
+    },
+  }));
+
   jest.mock("../../src/queue/syncQueue", () => ({
     SYNC_QUEUE_NAME: "accounting-sync",
   }));
@@ -137,8 +155,7 @@ describe("syncWorker — NATS consumer group configuration", () => {
     delete process.env.NATS_SYNC_CONSUMER_GROUP;
     delete process.env.NATS_CONSUMER_GROUP;
 
-    const { NATS_SYNC_CONSUMER_GROUP } =
-      require("../../src/queue/syncWorker");
+    const { NATS_SYNC_CONSUMER_GROUP } = require("../../src/queue/syncWorker");
 
     expect(NATS_SYNC_CONSUMER_GROUP).toBe("accounting-sync-group");
   });
@@ -147,8 +164,7 @@ describe("syncWorker — NATS consumer group configuration", () => {
     process.env.NATS_SYNC_CONSUMER_GROUP = "custom-sync-group";
     delete process.env.NATS_CONSUMER_GROUP;
 
-    const { NATS_SYNC_CONSUMER_GROUP } =
-      require("../../src/queue/syncWorker");
+    const { NATS_SYNC_CONSUMER_GROUP } = require("../../src/queue/syncWorker");
 
     expect(NATS_SYNC_CONSUMER_GROUP).toBe("custom-sync-group");
   });
@@ -157,8 +173,7 @@ describe("syncWorker — NATS consumer group configuration", () => {
     delete process.env.NATS_SYNC_CONSUMER_GROUP;
     process.env.NATS_CONSUMER_GROUP = "shared-consumer-group";
 
-    const { NATS_SYNC_CONSUMER_GROUP } =
-      require("../../src/queue/syncWorker");
+    const { NATS_SYNC_CONSUMER_GROUP } = require("../../src/queue/syncWorker");
 
     expect(NATS_SYNC_CONSUMER_GROUP).toBe("shared-consumer-group");
   });
@@ -167,8 +182,7 @@ describe("syncWorker — NATS consumer group configuration", () => {
     process.env.NATS_SYNC_CONSUMER_GROUP = "specific-sync-group";
     process.env.NATS_CONSUMER_GROUP = "shared-consumer-group";
 
-    const { NATS_SYNC_CONSUMER_GROUP } =
-      require("../../src/queue/syncWorker");
+    const { NATS_SYNC_CONSUMER_GROUP } = require("../../src/queue/syncWorker");
 
     expect(NATS_SYNC_CONSUMER_GROUP).toBe("specific-sync-group");
   });
@@ -208,8 +222,10 @@ describe("syncWorker — NATS consumer group configuration", () => {
     delete process.env.NATS_SYNC_SUBJECT;
     delete process.env.NATS_SYNC_DURABLE_CONSUMER;
 
-    const { NATS_SYNC_SUBJECT, NATS_SYNC_DURABLE_CONSUMER } =
-      require("../../src/queue/syncWorker");
+    const {
+      NATS_SYNC_SUBJECT,
+      NATS_SYNC_DURABLE_CONSUMER,
+    } = require("../../src/queue/syncWorker");
 
     expect(NATS_SYNC_SUBJECT).toBe("accounting.sync");
     expect(NATS_SYNC_DURABLE_CONSUMER).toBe("accounting-sync-consumer");
@@ -219,8 +235,10 @@ describe("syncWorker — NATS consumer group configuration", () => {
     process.env.NATS_SYNC_SUBJECT = "custom.subject";
     process.env.NATS_SYNC_DURABLE_CONSUMER = "custom-consumer";
 
-    const { NATS_SYNC_SUBJECT, NATS_SYNC_DURABLE_CONSUMER } =
-      require("../../src/queue/syncWorker");
+    const {
+      NATS_SYNC_SUBJECT,
+      NATS_SYNC_DURABLE_CONSUMER,
+    } = require("../../src/queue/syncWorker");
 
     expect(NATS_SYNC_SUBJECT).toBe("custom.subject");
     expect(NATS_SYNC_DURABLE_CONSUMER).toBe("custom-consumer");
@@ -330,6 +348,23 @@ describe("syncWorker — processNatsSyncMessage handler", () => {
     }));
 
     jest.mock("../../src/queue/config", () => ({ queueOptions: {} }));
+
+    jest.mock("../../src/tracer", () => ({
+      __esModule: true,
+      default: {
+        startSpan: jest.fn(() => ({
+          setTag: jest.fn(),
+          finish: jest.fn(),
+          context: jest.fn(() => ({})),
+        })),
+        scope: jest.fn(() => ({
+          activate: jest.fn((_: unknown, work: () => Promise<unknown>) =>
+            work(),
+          ),
+        })),
+      },
+    }));
+
     jest.mock("../../src/queue/syncQueue", () => ({
       SYNC_QUEUE_NAME: "accounting-sync",
     }));

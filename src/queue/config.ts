@@ -32,7 +32,6 @@ function parsePositiveInt(value: string | undefined): number | null {
 // ---------------------------------------------------------------------------
 function readConvictConcurrency(key: string): number | null {
   try {
-     
     const convictConfig = require("../config/appConfig").default;
     const value = convictConfig.get(key);
     return typeof value === "number" && value > 0 ? value : null;
@@ -115,9 +114,7 @@ export function getAccountingRetryWorkerConcurrency(): number {
  */
 export function getAccountingTokenRefreshWorkerConcurrency(): number {
   return (
-    parsePositiveInt(
-      process.env.ACCOUNTING_TOKEN_REFRESH_WORKER_CONCURRENCY,
-    ) ??
+    parsePositiveInt(process.env.ACCOUNTING_TOKEN_REFRESH_WORKER_CONCURRENCY) ??
     readConvictConcurrency("worker.accountingTokenRefreshConcurrency") ??
     3
   );
@@ -140,5 +137,19 @@ export function getProviderBalanceAlertWorkerConcurrency(): number {
     parsePositiveInt(process.env.PROVIDER_BALANCE_ALERT_WORKER_CONCURRENCY) ??
     readConvictConcurrency("worker.providerBalanceAlertConcurrency") ??
     1
+  );
+}
+
+/**
+ * Dynamically retrieves the failed payout refund worker concurrency limit.
+ *
+ * Refunds move customer funds, so the worker defaults to low concurrency while
+ * still allowing operators to scale once idempotency and monitoring are tuned.
+ */
+export function getRefundWorkerConcurrency(): number {
+  return (
+    parsePositiveInt(process.env.REFUND_WORKER_CONCURRENCY) ??
+    readConvictConcurrency("worker.refundConcurrency") ??
+    2
   );
 }

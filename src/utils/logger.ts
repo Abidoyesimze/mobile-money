@@ -1,11 +1,11 @@
-import pino, { Logger, TransportTargetOptions } from 'pino';
-import os from 'os';
-import { REDACT_KEYS } from './redact';
+import fs from "fs";
+import path from "path";
+import os from "os";
+import pino, { DestinationStream, Level, Logger, StreamEntry } from "pino";
+import { REDACT_KEYS } from "./redact";
+import { AsyncLocalStorage } from "async_hooks";
 
-const pinoFactory = (pino as typeof pino & { default?: typeof pino }).default ?? pino;
-const pinoTransport = (pinoFactory as typeof pinoFactory & { transport?: (options: pino.TransportMultiOptions) => unknown }).transport;
-
-let loggerInstance: Logger;
+export const requestContext = new AsyncLocalStorage<{ trace_id: string }>();
 
 /**
  * Centralized Pino Logger — feature/centralized-logging
@@ -18,6 +18,13 @@ let loggerInstance: Logger;
  *   service    – service name from SERVICE_NAME env var
  *
  * Transport:
+ *   - Production / CI  → raw JSON to stdout (pipe to log aggregator).
+ *                       Activated by NODE_ENV=production, LOG_FORMAT=json,
+ *                       or by leaving LOG_FORMAT unset (default is "json").
+ *   - Development      → pino-pretty for human-readable coloured output
+ *                       (enabled when LOG_PRETTY=true or LOG_FORMAT=pretty).
+ *                       The file stream and Loki transport always receive
+ *                       JSON regardless of stdout formatting.
  *   - Always writes to stdout (fallback / CI-safe)
  *   - Optionally ships to Loki via pino-loki when LOKI_HOST is set.
  *     The Loki transport runs in a worker thread (pino transport API) so
@@ -29,75 +36,339 @@ let loggerInstance: Logger;
  * transport sees them.
  */
 
-const SERVICE_NAME = process.env.SERVICE_NAME ?? 'mobile-money-api';
+const SERVICE_NAME = process.env.SERVICE_NAME ?? "mobile-money-api";
 const INSTANCE_ID = `${os.hostname()}:${process.pid}`;
-const LOG_LEVEL = process.env.LOG_LEVEL ?? 'info';
+type RotatingStreamFactory = (
+  filename: string | ((time: number | Date, index?: number) => string),
+  options?: {
+    compress?: "gzip";
+    history?: string;
+    maxFiles?: number;
+    path?: string;
+    size?: string;
+  },
+) => DestinationStream;
+
+const LOG_LEVEL = (process.env.LOG_LEVEL ?? "info") as Level;
+const LOG_DIR = process.env.LOG_DIR ?? path.join(process.cwd(), "logs");
+const LOG_FILE_SIZE = process.env.LOG_FILE_SIZE ?? "10M";
+const configuredRetention = Number(process.env.LOG_FILE_RETENTION ?? 14);
+const LOG_FILE_RETENTION = Number.isFinite(configuredRetention)
+  ? configuredRetention
+  : 14;
+const SCRUB_CENSOR = "[REDACTED]";
+
+// ---------------------------------------------------------------------------
+// Output format
+//
+// LOG_FORMAT strictly defaults to "json" so production log aggregators
+// (Loki, ELK, CloudWatch, Datadog) can ingest every line without
+// transformation. NODE_ENV=production forces JSON even if LOG_FORMAT is
+// misconfigured. In non-production environments developers can opt into
+// pretty coloured output via LOG_FORMAT=pretty or LOG_PRETTY=true for
+// readable local development. Pretty output is only applied to stdout —
+// the rotating file stream and Loki transport always receive JSON.
+// ---------------------------------------------------------------------------
+
+const NODE_ENV = process.env.NODE_ENV ?? "development";
+const IS_PRODUCTION = NODE_ENV === "production";
+const LOG_FORMAT = (process.env.LOG_FORMAT ?? "json").toLowerCase();
+const LOG_PRETTY = process.env.LOG_PRETTY === "true";
+// Production always emits JSON; non-production can opt into pretty stdout.
+const USE_PRETTY_STDOUT =
+  !IS_PRODUCTION && (LOG_FORMAT === "pretty" || LOG_PRETTY);
+
+// ---------------------------------------------------------------------------
+// Global regex scrub filters — applied inside every transport so secrets
+// never reach stdout, rotating files, or Loki regardless of log verbosity.
+// ---------------------------------------------------------------------------
+
+/** Extra PII master-key field names not covered by generic REDACT_KEYS. */
+const PII_MASTER_KEY_FIELDS = [
+  "pii_master_key",
+  "piiMasterKey",
+  "PII_MASTER_KEY",
+  "db_encryption_key",
+  "dbEncryptionKey",
+  "DB_ENCRYPTION_KEY",
+];
+
+/** User PII parameter field names to redact in logs */
+export const PII_USER_FIELDS = [
+  "email",
+  "e_mail",
+  "user_email",
+  "userEmail",
+  "phone",
+  "phoneNumber",
+  "phone_number",
+  "mobile",
+  "msisdn",
+  "telephone",
+  "first_name",
+  "firstName",
+  "last_name",
+  "lastName",
+  "display_name",
+  "displayName",
+  "full_name",
+  "fullName",
+  "user_name",
+  "userName",
+];
+
+type ScrubFilter = { pattern: RegExp; replacement: string };
+
+function buildJsonKeyValueScrubFilters(keys: string[]): ScrubFilter[] {
+  return keys.flatMap((key) => {
+    const escaped = key.replace(/[_-]/g, "[_-]?");
+    return [
+      {
+        pattern: new RegExp(
+          `("${escaped}"\\s*:\\s*")([^"\\\\]*(?:\\\\.[^"\\\\]*)*)(")`,
+          "gi",
+        ),
+        replacement: `$1${SCRUB_CENSOR}$3`,
+      },
+      {
+        pattern: new RegExp(`('${escaped}'\\s*:\\s*')([^']*)(')`, "gi"),
+        replacement: `$1${SCRUB_CENSOR}$3`,
+      },
+    ];
+  });
+}
+
+const PII_SCRUB_REGEX_FILTERS: ScrubFilter[] = [
+  ...buildJsonKeyValueScrubFilters([
+    ...REDACT_KEYS,
+    ...PII_MASTER_KEY_FIELDS,
+    ...PII_USER_FIELDS,
+  ]),
+  // Bearer tokens embedded in message strings
+  {
+    pattern: /Bearer\s+[A-Za-z0-9\-._~+/]+=*/g,
+    replacement: `Bearer ${SCRUB_CENSOR}`,
+  },
+  // Stellar secret keys (S…)
+  {
+    pattern: /\bS[A-Z2-7]{55}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Standalone email addresses
+  {
+    pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Standalone international phone numbers (E.164: + followed by 8-15 digits)
+  {
+    pattern: /\+1?\d{9,14}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // JWT tokens anywhere in text (three base64url segments separated by dots)
+  {
+    pattern: /\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Hex-encoded private keys (64+ consecutive hex chars — likely 256-bit keys)
+  {
+    pattern: /\b[a-fA-F0-9]{64,}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Base64-encoded secrets (40+ base64 chars — likely encrypted payloads)
+  {
+    pattern: /\b[A-Za-z0-9+/]{40,}={0,2}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Stellar public addresses (G… 56 chars) — redact from logs to prevent
+  // address correlation via log aggregation
+  {
+    pattern: /\bG[A-Z2-7]{55}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Stellar transaction hash or hex identifiers (64 hex chars)
+  {
+    pattern: /\b[a-f0-9]{64}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+  // Stellar base64 transaction envelope XDR (long base64 with +/=)
+  {
+    pattern: /\bAAAA[A-Za-z0-9+/=]{100,}\b/g,
+    replacement: SCRUB_CENSOR,
+  },
+];
+
+const PII_KEY_VALUE_PATTERN =
+  /\b(master[_-]?key|pii[_-]?master[_-]?key|db[_-]?encryption[_-]?key|email|user[_-]?email|phone[_-]?number|phone|msisdn|mobile|first[_-]?name|last[_-]?name|display[_-]?name|full[_-]?name|user[_-]?name)\s*[=:]\s*['"]?[^\s'",}]+['"]?/gi;
+
+export function scrubLogOutput(chunk: string): string {
+  let result = chunk.replace(
+    PII_KEY_VALUE_PATTERN,
+    (match, key: string) => `${key}=${SCRUB_CENSOR}`,
+  );
+
+  for (const { pattern, replacement } of PII_SCRUB_REGEX_FILTERS) {
+    pattern.lastIndex = 0;
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+
+/** Express middleware for sanitizing PII in request payloads and parameters */
+export function logSanitizerMiddleware(req: any, res: any, next: any): void {
+  if (req.body && typeof req.body === "object") {
+    try {
+      req.body = JSON.parse(scrubLogOutput(JSON.stringify(req.body)));
+    } catch {}
+  }
+  if (req.query && typeof req.query === "object") {
+    try {
+      req.query = JSON.parse(scrubLogOutput(JSON.stringify(req.query)));
+    } catch {}
+  }
+  if (req.params && typeof req.params === "object") {
+    try {
+      req.params = JSON.parse(scrubLogOutput(JSON.stringify(req.params)));
+    } catch {}
+  }
+  if (typeof next === "function") next();
+}
+
+/** Wrap any pino destination so regex scrubbing runs before the transport prints. */
+function wrapStreamWithScrubbing(stream: DestinationStream): DestinationStream {
+  return {
+    write(msg: string) {
+      stream.write(scrubLogOutput(msg));
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Transport configuration
 // ---------------------------------------------------------------------------
 
+function formatShardDate(date: Date): string {
+  return date.toISOString().replace(/[:.]/g, "-");
+}
+
+function logFileName(time: number | Date, index?: number): string {
+  if (!time) {
+    return "app.log";
+  }
+
+  const shardDate = formatShardDate(
+    time instanceof Date ? time : new Date(time),
+  );
+  const shardIndex = index ? `.${index}` : "";
+
+  return `app-${shardDate}${shardIndex}.log`;
+}
+
+function ensureLogDirectory(): void {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+
 /**
- * Build the pino transport targets array.
- *
- * stdout is always included.  The Loki target is added only when LOKI_HOST
- * is present in the environment, keeping CI and local dev working without
- * any external sink.
+ * Build the stdout destination. In production this is always raw stdout
+ * (JSON lines). In non-production, when LOG_FORMAT=pretty or LOG_PRETTY=true,
+ * output is routed through pino-pretty for human-readable coloured logs.
  */
-function buildTransports(): pino.TransportMultiOptions | undefined {
+function buildStdoutStream(): DestinationStream {
+  if (!USE_PRETTY_STDOUT) {
+    return process.stdout;
+  }
+
+  return pino.transport({
+    target: "pino-pretty",
+    options: {
+      colorize: true,
+      translateTime: "SYS:standard",
+      ignore: "pid,hostname",
+    },
+  });
+}
+
+function buildFileStream(): DestinationStream {
+  ensureLogDirectory();
+
+  const { createStream } = require("rotating-file-stream") as {
+    createStream: RotatingStreamFactory;
+  };
+
+  return createStream(logFileName, {
+    path: LOG_DIR,
+    size: LOG_FILE_SIZE,
+    compress: "gzip",
+    maxFiles: LOG_FILE_RETENTION,
+    history: "app.log.history",
+  });
+}
+
+/**
+ * Build the pino output stream array.
+ *
+ * stdout is always included. The local file stream rotates by size and gzip
+ * compresses old shards. The Loki target is added only when LOKI_HOST is
+ * present in the environment, keeping CI and local dev working without any
+ * external sink.
+ *
+ * The stdout stream respects LOG_FORMAT / LOG_PRETTY in non-production
+ * environments. The file stream and Loki transport always receive JSON
+ * regardless of stdout formatting.
+ */
+function buildStreams(): StreamEntry[] | undefined {
   const lokiHost = process.env.LOKI_HOST;
 
   // In test environments skip all transports — tests use the raw pino
   // instance and should not attempt network connections.
-  if (process.env.NODE_ENV === 'test') {
+  if (NODE_ENV === "test") {
     return undefined;
   }
 
-  const targets: TransportTargetOptions[] = [
+  const streams: StreamEntry[] = [
     {
-      target: 'pino/file',
       level: LOG_LEVEL,
-      options: { destination: 1 }, // fd 1 = stdout
+      stream: wrapStreamWithScrubbing(buildStdoutStream()),
+    },
+    {
+      level: LOG_LEVEL,
+      stream: wrapStreamWithScrubbing(buildFileStream()),
     },
   ];
 
   if (lokiHost) {
-    targets.push({
+    streams.push({
       // pino-loki runs in a worker thread — fully async, non-blocking
-      target: 'pino-loki',
       level: LOG_LEVEL,
-      options: {
-        host: lokiHost,
-        // Gracefully handle connection failures — never throw into the app
-        silenceErrors: true,
-        labels: {
-          service: SERVICE_NAME,
-          env: process.env.NODE_ENV ?? 'development',
-        },
-        // Batch up to 10 log lines or flush every 5 s, whichever comes first
-        batching: true,
-        interval: 5,
-      },
+      stream: wrapStreamWithScrubbing(
+        pino.transport({
+          target: "pino-loki",
+          options: {
+            host: lokiHost,
+            // Gracefully handle connection failures — never throw into the app
+            silenceErrors: true,
+            labels: {
+              service: SERVICE_NAME,
+              env: process.env.NODE_ENV ?? "development",
+            },
+            // Batch up to 10 log lines or flush every 5 s, whichever comes first
+            batching: true,
+            interval: 5,
+          },
+        }),
+      ),
     });
   }
 
-  // Only wrap in multi-transport when we have more than one target
-  if (targets.length === 1) {
-    return undefined; // let pino default to stdout
-  }
-
-  return {
-    targets,
-  };
+  return streams;
 }
 
 // ---------------------------------------------------------------------------
 // Logger instance
 // ---------------------------------------------------------------------------
 
-const transport = buildTransports();
+const streams = buildStreams();
 
-const logger = pinoFactory(
+const logger: Logger = pino(
   {
     level: LOG_LEVEL,
 
@@ -114,6 +385,11 @@ const logger = pinoFactory(
       instance_id: INSTANCE_ID,
     },
 
+    mixin() {
+      const store = requestContext.getStore();
+      return store && store.trace_id ? { trace_id: store.trace_id } : {};
+    },
+
     // Format the level as uppercase string for Loki/Grafana label filters
     formatters: {
       level: (label) => ({ level: label.toUpperCase() }),
@@ -123,46 +399,258 @@ const logger = pinoFactory(
     redact: {
       paths: [
         ...REDACT_KEYS,
+        ...PII_MASTER_KEY_FIELDS,
+        ...PII_USER_FIELDS,
         ...REDACT_KEYS.map((key) => `*.${key}`),
+        ...PII_MASTER_KEY_FIELDS.map((key) => `*.${key}`),
+        ...PII_USER_FIELDS.map((key) => `*.${key}`),
         ...REDACT_KEYS.map((key) => `req.headers.${key}`),
         ...REDACT_KEYS.map((key) => `*.req.headers.${key}`),
+        ...PII_MASTER_KEY_FIELDS.map((key) => `req.headers.${key}`),
+        ...PII_MASTER_KEY_FIELDS.map((key) => `*.req.headers.${key}`),
+        ...PII_USER_FIELDS.map((key) => `req.headers.${key}`),
+        ...PII_USER_FIELDS.map((key) => `*.req.headers.${key}`),
       ],
-      censor: '[REDACTED]',
+      censor: SCRUB_CENSOR,
     },
 
     // ISO-8601 timestamps
     timestamp: pino.stdTimeFunctions.isoTime,
   },
-  transport && pinoTransport ? pinoTransport(transport) : undefined,
-) as unknown as Logger;
+  streams ? pino.multistream(streams, { dedupe: true }) : undefined,
+);
 
-loggerInstance = logger;
-
-export function childLogger(traceId: string, extra?: Record<string, unknown>): Logger {
-  const child = loggerInstance.child({ trace_id: traceId, ...extra }) as Logger & { level?: string };
-  Object.defineProperty(child, 'level', {
-    configurable: true,
-    enumerable: true,
-    get: () => loggerInstance.level,
-  });
-  return child;
-}
-
-const loggerExports = logger as unknown as Logger & {
-  childLogger: typeof childLogger;
-  logger: Logger;
-  default: Logger;
+export type RelaxedLogger = Omit<
+  Logger,
+  "fatal" | "error" | "warn" | "info" | "debug" | "trace"
+> & {
+  fatal: (msg: string | object, ...args: any[]) => void;
+  error: (msg: string | object, ...args: any[]) => void;
+  warn: (msg: string | object, ...args: any[]) => void;
+  info: (msg: string | object, ...args: any[]) => void;
+  debug: (msg: string | object, ...args: any[]) => void;
+  trace: (msg: string | object, ...args: any[]) => void;
 };
 
-loggerExports.childLogger = childLogger;
-loggerExports.logger = logger;
-loggerExports.default = logger;
+const relaxedLogger = logger as unknown as RelaxedLogger;
+export default relaxedLogger;
 
-export { logger };
-export default logger;
+/**
+ * Create a child logger pre-bound with a trace_id.
+ * Use this in request handlers to propagate distributed trace context:
+ *
+ *   const reqLogger = childLogger(req.headers['x-trace-id'] as string);
+ *   reqLogger.info({ path: req.path }, 'incoming request');
+ */
+export function childLogger(
+  traceId: string,
+  extra?: Record<string, unknown>,
+): any {
+  return logger.child({ trace_id: traceId, ...extra });
+}
 
-module.exports = loggerExports;
-(module.exports as typeof module.exports & { childLogger: typeof childLogger; logger: Logger; default: Logger }).childLogger = childLogger;
-(module.exports as typeof module.exports & { childLogger: typeof childLogger; logger: Logger; default: Logger }).logger = logger;
-(module.exports as typeof module.exports & { childLogger: typeof childLogger; logger: Logger; default: Logger }).default = logger;
+// ---------------------------------------------------------------------------
+// Telecom Latency Tracking & Audit Logging
+// ---------------------------------------------------------------------------
 
+export interface TelecomLatencyMetric {
+  provider: string;
+  operation: string;
+  durationMs: number;
+  success: boolean;
+  statusCode?: number;
+  endpoint?: string;
+  timestamp?: string;
+}
+
+export interface TelecomOperationStats {
+  operation: string;
+  count: number;
+  successCount: number;
+  errorCount: number;
+  avgDurationMs: number;
+  minDurationMs: number;
+  maxDurationMs: number;
+}
+
+export interface TelecomProviderMetricsSummary {
+  provider: string;
+  totalRequests: number;
+  successCount: number;
+  errorCount: number;
+  overallAvgDurationMs: number;
+  minDurationMs: number;
+  maxDurationMs: number;
+  operations: Record<string, TelecomOperationStats>;
+}
+
+const AUDIT_LOG_DIR = path.join(LOG_DIR, "audit");
+export const TELECOM_METRICS_LOG_FILE = path.join(
+  AUDIT_LOG_DIR,
+  "telecom-metrics.log",
+);
+
+const telecomLatencyStore: TelecomLatencyMetric[] = [];
+const MAX_STORE_ENTRIES = 5000;
+
+function ensureAuditLogDirectory(): void {
+  try {
+    if (!fs.existsSync(AUDIT_LOG_DIR)) {
+      fs.mkdirSync(AUDIT_LOG_DIR, { recursive: true });
+    }
+  } catch (err) {
+    logger.error({ err }, "Failed to create audit log directory:");
+  }
+}
+
+/**
+ * Record round-trip response time for telecom provider requests.
+ * Writes performance metrics to the audit log folder (logs/audit/telecom-metrics.log),
+ * updates in-memory store for admin metrics API, and logs via Pino.
+ */
+export function recordTelecomLatency(metric: TelecomLatencyMetric): void {
+  const timestamp = metric.timestamp ?? new Date().toISOString();
+  const entry: TelecomLatencyMetric = {
+    ...metric,
+    timestamp,
+    durationMs: Math.max(0, Math.round(metric.durationMs * 100) / 100),
+  };
+
+  telecomLatencyStore.push(entry);
+  if (telecomLatencyStore.length > MAX_STORE_ENTRIES) {
+    telecomLatencyStore.shift();
+  }
+
+  ensureAuditLogDirectory();
+
+  try {
+    const logLine = JSON.stringify(entry) + "\n";
+    fs.appendFileSync(TELECOM_METRICS_LOG_FILE, logLine, "utf8");
+  } catch (err) {
+    logger.error({ err }, "Failed to write to telecom audit log file:");
+  }
+
+  relaxedLogger.info(
+    {
+      type: "telecom_latency_metric",
+      ...entry,
+    },
+    `Telecom API latency: ${entry.provider} - ${entry.operation} took ${entry.durationMs}ms`,
+  );
+}
+
+/**
+ * Retrieve aggregated telecom latency metrics including average response times overall
+ * and broken down per operation. Reads from in-memory store and falls back to
+ * reading the audit log file if in-memory store is empty.
+ */
+export function getTelecomAverageMetrics(
+  providerFilter?: string,
+): TelecomProviderMetricsSummary {
+  let records: TelecomLatencyMetric[] = [...telecomLatencyStore];
+
+  if (records.length === 0 && fs.existsSync(TELECOM_METRICS_LOG_FILE)) {
+    try {
+      const fileContent = fs.readFileSync(TELECOM_METRICS_LOG_FILE, "utf8");
+      const lines = fileContent.split("\n").filter((l) => l.trim().length > 0);
+      records = lines.map((line) => JSON.parse(line));
+    } catch (err) {
+      logger.error({ err }, "Error reading telecom audit log file:");
+    }
+  }
+
+  if (providerFilter) {
+    const filterLower = providerFilter.toLowerCase();
+    records = records.filter((r) => r.provider.toLowerCase() === filterLower);
+  }
+
+  const totalRequests = records.length;
+  if (totalRequests === 0) {
+    return {
+      provider: providerFilter ?? "all",
+      totalRequests: 0,
+      successCount: 0,
+      errorCount: 0,
+      overallAvgDurationMs: 0,
+      minDurationMs: 0,
+      maxDurationMs: 0,
+      operations: {},
+    };
+  }
+
+  let totalDuration = 0;
+  let successCount = 0;
+  let errorCount = 0;
+  let minDurationMs = Infinity;
+  let maxDurationMs = -Infinity;
+
+  const opGroupMap: Record<string, TelecomLatencyMetric[]> = {};
+
+  for (const r of records) {
+    totalDuration += r.durationMs;
+    if (r.success) {
+      successCount++;
+    } else {
+      errorCount++;
+    }
+
+    if (r.durationMs < minDurationMs) minDurationMs = r.durationMs;
+    if (r.durationMs > maxDurationMs) maxDurationMs = r.durationMs;
+
+    const opKey = r.operation || "unknown";
+    if (!opGroupMap[opKey]) {
+      opGroupMap[opKey] = [];
+    }
+    opGroupMap[opKey].push(r);
+  }
+
+  const operations: Record<string, TelecomOperationStats> = {};
+  for (const [opKey, opRecords] of Object.entries(opGroupMap)) {
+    let opTotalDuration = 0;
+    let opSuccess = 0;
+    let opError = 0;
+    let opMin = Infinity;
+    let opMax = -Infinity;
+
+    for (const r of opRecords) {
+      opTotalDuration += r.durationMs;
+      if (r.success) opSuccess++;
+      else opError++;
+
+      if (r.durationMs < opMin) opMin = r.durationMs;
+      if (r.durationMs > opMax) opMax = r.durationMs;
+    }
+
+    operations[opKey] = {
+      operation: opKey,
+      count: opRecords.length,
+      successCount: opSuccess,
+      errorCount: opError,
+      avgDurationMs:
+        Math.round((opTotalDuration / opRecords.length) * 100) / 100,
+      minDurationMs: opMin === Infinity ? 0 : Math.round(opMin * 100) / 100,
+      maxDurationMs: opMax === -Infinity ? 0 : Math.round(opMax * 100) / 100,
+    };
+  }
+
+  return {
+    provider: providerFilter ?? "all",
+    totalRequests,
+    successCount,
+    errorCount,
+    overallAvgDurationMs:
+      Math.round((totalDuration / totalRequests) * 100) / 100,
+    minDurationMs:
+      minDurationMs === Infinity ? 0 : Math.round(minDurationMs * 100) / 100,
+    maxDurationMs:
+      maxDurationMs === -Infinity ? 0 : Math.round(maxDurationMs * 100) / 100,
+    operations,
+  };
+}
+
+/**
+ * Clears in-memory metrics store (useful for testing).
+ */
+export function clearTelecomMetricsStore(): void {
+  telecomLatencyStore.length = 0;
+}

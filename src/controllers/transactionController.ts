@@ -11,8 +11,6 @@ import {
   TransactionStatus,
 } from "../models/transaction";
 import { lockManager, LockKeys } from "../utils/lock";
-import { TransactionLimitService } from "../services/transactionLimit/transactionLimitService";
-import { KYCService } from "../services/kyc/kycService";
 import {
   MobileMoneyProvider,
   validateProviderLimits,
@@ -21,9 +19,9 @@ import type { TransactionJobData } from "../queue/transactionQueue";
 import { amlService } from "../services/aml";
 import { generateFlaggedTransactionComplianceReport } from "../services/complianceReportService";
 import { twoFactorWithdrawalService } from "../services/twoFactorWithdrawalService";
+import { totpService } from "../services/auth/totp";
 import {
   CancelTransactionResponse,
-  LimitExceededErrorResponse,
   PhoneSearchResponse,
   TransactionDetailResponse,
   TransactionResponse,
@@ -37,6 +35,7 @@ import { ERROR_CODES } from "../constants/errorCodes";
 import { travelRuleService } from "../compliance/travelRule";
 import { createError } from "../middleware/errorHandler";
 import { sep08Service } from "../services/compliance/sep08";
+import { enforceKycCheck } from "../middleware/kycCheck";
 
 const IDEMPOTENCY_TTL_HOURS = Number(
   process.env.IDEMPOTENCY_KEY_TTL_HOURS || 24,
@@ -52,11 +51,6 @@ const stellarService = new StellarService();
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const mobileMoneyService = new MobileMoneyService();
 const transactionModel = new TransactionModel();
-const kycService = new KYCService();
-const transactionLimitService = new TransactionLimitService(
-  kycService,
-  transactionModel,
-);
 
 async function addTransactionJob(
   data: TransactionJobData,
@@ -94,6 +88,7 @@ export const transactionSchema = z.object({
     .optional(),
   // Optional 2FA fields for withdrawals
   twoFactorToken: z.string().optional(),
+  totpCode: z.string().optional(),
   backupCode: z.string().optional(),
 });
 
@@ -252,7 +247,8 @@ export const getTransactionHistoryHandler = async (
         hasMore,
       },
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error.code) throw error;
     logger.error("History Fetch Error:", error);
     throw createError(
       ERROR_CODES.INTERNAL_ERROR,
@@ -481,18 +477,21 @@ async function applyTravelRule(transaction: Transaction): Promise<void> {
  * Verifies approval status before ledger submission per SEP-08 specification.
  * Rejects transactions if verification returns failed status.
  */
-async function applySEP08Verification(
-  transaction: Transaction,
-): Promise<void> {
+async function applySEP08Verification(transaction: Transaction): Promise<void> {
   if (transaction.type !== "deposit") return;
 
   try {
     const paymentAsset = getConfiguredPaymentAsset();
-    const verificationResult =
-      await sep08Service.verifyDepositApproval(transaction, paymentAsset.code);
+    const verificationResult = await sep08Service.verifyDepositApproval(
+      transaction,
+      paymentAsset.code,
+    );
 
     if (verificationResult.status === "failed") {
-      await transactionModel.updateStatus(transaction.id, TransactionStatus.Failed);
+      await transactionModel.updateStatus(
+        transaction.id,
+        TransactionStatus.Failed,
+      );
       await transactionModel.addTags(transaction.id, ["sep08-rejected"]);
       await transactionModel.updateAdminNotes(
         transaction.id,
@@ -500,7 +499,8 @@ async function applySEP08Verification(
       );
 
       throw createError(ERROR_CODES.COMPLIANCE_REQUIRED, null, {
-        error: verificationResult.message || "SEP-08 compliance verification failed",
+        error:
+          verificationResult.message || "SEP-08 compliance verification failed",
         code: "SEP08_VERIFICATION_FAILED",
         details: {
           transactionId: transaction.id,
@@ -510,7 +510,10 @@ async function applySEP08Verification(
     }
 
     if (verificationResult.status === "pending") {
-      await transactionModel.updateStatus(transaction.id, TransactionStatus.Failed);
+      await transactionModel.updateStatus(
+        transaction.id,
+        TransactionStatus.Failed,
+      );
       await transactionModel.addTags(transaction.id, ["sep08-pending"]);
       await transactionModel.updateAdminNotes(
         transaction.id,
@@ -572,8 +575,7 @@ async function processTransactionRequest(
       req.body.provider = req.body.provider.toLowerCase();
     }
 
-    const { amount, phoneNumber, provider, stellarAddress, userId, notes } =
-      req.body;
+    const { amount, phoneNumber, provider, stellarAddress, notes } = req.body;
 
     const requestAmount = getRequestAmount(amount);
     if (!Number.isFinite(requestAmount) || requestAmount <= 0) {
@@ -603,32 +605,11 @@ async function processTransactionRequest(
       return res.status(400).json({ error: providerLimitCheck.error });
     }
 
-    const limitCheck = await transactionLimitService.checkTransactionLimit(
-      userId,
-      requestAmount,
-    );
-
-    if (!limitCheck.allowed) {
-      const body: LimitExceededErrorResponse = {
-        code: "TRANSACTION_LIMIT_EXCEEDED",
-        message: limitCheck.message || "Transaction limit exceeded",
-        message_en: "Transaction limit exceeded",
-        timestamp: new Date().toISOString(),
-        details: {
-          kycLevel: limitCheck.kycLevel,
-          dailyLimit: limitCheck.dailyLimit,
-          currentDailyTotal: limitCheck.currentDailyTotal,
-          remainingLimit: limitCheck.remainingLimit,
-          message: limitCheck.message,
-          upgradeAvailable: limitCheck.upgradeAvailable,
-        },
-      };
-
-      // return res.status(400).json(body);
-      throw createError(ERROR_CODES.INVALID_INPUT, null, {
-        body,
-      });
+    const kycOutcome = await enforceKycCheck(req, res);
+    if (!kycOutcome.allowed) {
+      return res;
     }
+    const { userId } = kycOutcome;
 
     // Check mandatory 2FA for withdrawals
     if (type === "withdraw") {
@@ -636,12 +617,15 @@ async function processTransactionRequest(
         await twoFactorWithdrawalService.requires2FAForWithdrawal(userId);
       if (requires2FA) {
         const twoFactorToken =
-          req.body.twoFactorToken || (req.headers["x-2fa-token"] as string);
+          req.body.totpCode ||
+          req.body.twoFactorToken ||
+          (req.headers["x-totp-code"] as string) ||
+          (req.headers["x-2fa-token"] as string);
         const backupCode = req.body.backupCode;
 
         if (!twoFactorToken && !backupCode) {
           throw createError(
-            ERROR_CODES.INVALID_CREDENTIALS,
+            ERROR_CODES.INVALID_INPUT,
             "This account requires 2FA verification for all withdrawals. Please provide a TOTP token or backup code.",
             {
               code: "TWO_FACTOR_REQUIRED",
@@ -659,7 +643,7 @@ async function processTransactionRequest(
 
         if (!verificationResult.success) {
           throw createError(
-            ERROR_CODES.UNAUTHORIZED,
+            ERROR_CODES.INVALID_INPUT,
             verificationResult.error || "Invalid 2FA token or backup code",
             {
               error: "2FA verification failed",
@@ -1206,10 +1190,7 @@ export const listAmlAlertsHandler = async (req: Request, res: Response) => {
 
     const alerts = amlService.getAlerts({
       status: statusFilter as
-        | "pending_review"
-        | "reviewed"
-        | "dismissed"
-        | undefined,
+        "pending_review" | "reviewed" | "dismissed" | undefined,
       userId: typeof userId === "string" ? userId : undefined,
       startDate: parsedStart,
       endDate: parsedEnd,

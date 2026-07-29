@@ -34,7 +34,7 @@ const mockDatabase = {
 };
 // Database — every query returns an empty result
 jest.mock("../../src/config/database", () => mockDatabase);
-jest.mock("../../src/config/database.js", () => mockDatabase);
+// jest.mock("../../src/config/database.js", () => mockDatabase);
 
 // Redis
 jest.mock("../../src/config/redis", () => ({

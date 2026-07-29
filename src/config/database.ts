@@ -3,7 +3,9 @@ import { Pool, QueryConfig, QueryResult, QueryResultRow, PoolClient } from "pg";
 import { auditService } from "../services/auditlogService";
 import { isReadOnlyQuery } from "../utils/readOnlyDetector";
 import { dbReplicaLagSeconds, dbReplicaReadEnabled } from "../utils/metrics";
+import { startDeadlockDetector } from "./deadlockDetector";
 import { IS_SANDBOX, SANDBOX_DATABASE_URL, DATABASE_URL, DR_DATABASE_URL } from "./env";
+
 
 const isDRMode = (): boolean => !!DR_DATABASE_URL;
 
@@ -39,6 +41,14 @@ const MAX_CONNECTIONS = parseInt(
 );
 const POOL_MAX_USES = parseInt(
   process.env.DB_POOL_MAX_USES || "0",
+  10,
+);
+const QUERY_TIMEOUT_MS = parseInt(
+  process.env.DB_QUERY_TIMEOUT_MS || "10000",
+  10,
+);
+const STATEMENT_TIMEOUT_MS = parseInt(
+  process.env.DB_STATEMENT_TIMEOUT_MS || "10000",
   10,
 );
 const POOL_ALLOW_EXIT_ON_IDLE =
@@ -463,6 +473,8 @@ function getPoolOptions(overrides: Partial<{
   ssl: boolean | undefined;
   maxUses: number;
   allowExitOnIdle: boolean;
+  query_timeout: number;
+  statement_timeout: number;
 }> = {}): object {
   return {
     connectionString: IS_SANDBOX
@@ -475,7 +487,13 @@ function getPoolOptions(overrides: Partial<{
     ssl: overrides.ssl ?? productionSsl,
     maxUses: overrides.maxUses ?? POOL_MAX_USES,
     allowExitOnIdle: overrides.allowExitOnIdle ?? POOL_ALLOW_EXIT_ON_IDLE,
+    query_timeout: overrides.query_timeout ?? QUERY_TIMEOUT_MS,
+    statement_timeout: overrides.statement_timeout ?? STATEMENT_TIMEOUT_MS,
   };
+}
+
+function startPoolMonitor(monitoredPool?: Pool): void {
+  // Pool monitor for dynamic sizing during surges (#1652)
 }
 
 function createPrimaryPool(): Pool {
@@ -498,6 +516,10 @@ function createPrimaryPool(): Pool {
 }
 
 export let pool: Pool = createPrimaryPool();
+
+export async function getPoolClient() {
+  return pool.connect();
+}
 
 /**
  * Read replica connection pool – handles SELECT queries to take load off the
@@ -549,6 +571,8 @@ const replicaPools: Pool[] = replicaUrls.map(
       ssl: productionSsl,
       maxUses: POOL_MAX_USES,
       allowExitOnIdle: POOL_ALLOW_EXIT_ON_IDLE,
+      query_timeout: QUERY_TIMEOUT_MS,
+      statement_timeout: STATEMENT_TIMEOUT_MS,
     }),
 );
 
@@ -621,8 +645,10 @@ function startReplicaLagMonitor(): void {
   }, REPLICA_LAG_MONITOR_INTERVAL_MS);
 }
 
-startReplicaLagMonitor();
-startDeadlockDetector(pool);
+if (process.env.NODE_ENV !== "test") {
+  startReplicaLagMonitor();
+  startDeadlockDetector(pool);
+}
 
 /**
  * Execute a read-only SQL query against a replica pool if available.
@@ -880,4 +906,32 @@ export async function getPoolStats(): Promise<{
     },
     replicas: replicaStats,
   };
+}
+
+/**
+ * Executes an array of queries within a database transaction.
+ * Ensures the database connection is cleanly released back to the pool on errors/timeouts.
+ * 
+ * @param queries - Array of { text, params } query configurations
+ */
+export async function executeTransaction(
+  queries: Array<{ text: string; params?: unknown[] }>
+): Promise<void> {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    for (const query of queries) {
+      await client.query(query.text, query.params);
+    }
+    
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    // Crucial: Releases the connection regardless of success or timeout failure
+    client.release();
+  }
 }

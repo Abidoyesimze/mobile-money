@@ -77,29 +77,54 @@ const feeDisplay = document.getElementById("fee-display");
 const finalDisplay = document.getElementById("final-display");
 
 function calculateConversion() {
+  if (!sendAmountInput || !sendCurrencySelect || !receiveAssetSelect) return;
+
   const sendAmt = parseFloat(sendAmountInput.value) || 0;
   const sendCurrency = sendCurrencySelect.value;
   const receiveAsset = receiveAssetSelect.value;
 
   const config = RATES[sendCurrency];
-  const rate = config[receiveAsset];
+  if (!config) return;
+
+  const rate = config[receiveAsset] || 0;
 
   // Operator fee (1.5%)
   const fee = sendAmt * 0.015;
   const netAmt = Math.max(0, sendAmt - fee);
   const receiveVal = netAmt * rate;
 
-  // Update DOM elements
-  rateDisplay.textContent = config.rateStr.replace("USDC", receiveAsset);
-  feeDisplay.textContent = `${fee.toFixed(0)} ${sendCurrency}`;
-  receiveAmountInput.value = receiveVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-  finalDisplay.textContent = `${receiveAmountInput.value} ${receiveAsset}`;
+  // Format decimal display outputs to 2 decimal places
+  const formattedFee = fee.toFixed(2);
+  const formattedReceiveVal = receiveVal.toFixed(2);
+
+  // Update DOM elements cleanly
+  if (rateDisplay) {
+    rateDisplay.textContent = config.rateStr.replace("USDC", receiveAsset);
+  }
+  if (feeDisplay) {
+    feeDisplay.textContent = `${formattedFee} ${sendCurrency}`;
+  }
+  if (receiveAmountInput) {
+    receiveAmountInput.value = formattedReceiveVal;
+  }
+  if (finalDisplay) {
+    finalDisplay.textContent = `${formattedReceiveVal} ${receiveAsset}`;
+  }
 }
 
-// Add event listeners for inputs
-sendAmountInput.addEventListener("input", calculateConversion);
-sendCurrencySelect.addEventListener("change", calculateConversion);
-receiveAssetSelect.addEventListener("change", calculateConversion);
+// Add event listeners for inputs (including keypress and keyup for live calculation)
+if (sendAmountInput) {
+  sendAmountInput.addEventListener("input", calculateConversion);
+  sendAmountInput.addEventListener("keypress", calculateConversion);
+  sendAmountInput.addEventListener("keyup", calculateConversion);
+  sendAmountInput.addEventListener("change", calculateConversion);
+}
+if (sendCurrencySelect) {
+  sendCurrencySelect.addEventListener("change", calculateConversion);
+}
+if (receiveAssetSelect) {
+  receiveAssetSelect.addEventListener("change", calculateConversion);
+}
 
 // Initial calculation
 calculateConversion();
@@ -273,3 +298,381 @@ setInterval(loadSlaMetrics, 60000);
 
 const btnRefreshSla = document.getElementById("btn-refresh-sla");
 if (btnRefreshSla) btnRefreshSla.addEventListener("click", loadSlaMetrics);
+
+// Transaction Error Mapping (#1551)
+const MTN_ERROR_MAP = {
+  "4005": "Insufficient Balance",
+  "4001": "Invalid Request",
+  "4002": "Invalid Phone Number",
+  "4003": "Transaction Not Allowed",
+  "4004": "Daily Limit Exceeded",
+  "4006": "Duplicate Transaction",
+  "4007": "Transaction Timed Out",
+  "4008": "Service Unavailable",
+  "4009": "Invalid Amount",
+  "4010": "Authentication Failed",
+  "4011": "Account Suspended",
+  "4012": "PIN Required",
+  "4013": "Invalid PIN",
+  "4014": "PIN Attempts Exceeded",
+  "4015": "Recipient Not Registered",
+  "4016": "Merchant Not Found",
+  "4017": "Invalid Reference",
+  "4018": "System Busy - Retry Later",
+  "5001": "Internal Server Error",
+  "5002": "Provider Network Error",
+  "5003": "Database Error",
+  "5004": "Timeout Error",
+  "5005": "Unknown Error",
+  "TECHNICAL_ERROR": "Technical Error - Please Try Again",
+  "PAYER_NOT_FOUND": "Payer Account Not Found",
+  "PAYEE_NOT_FOUND": "Recipient Account Not Found",
+  "NOT_ALLOWED": "Transaction Type Not Allowed",
+  "NOT_ENOUGH_FUNDS": "Insufficient Funds",
+  "LIMIT_EXCEEDED": "Transaction Limit Exceeded",
+  "DUPLICATE_REFERENCE": "Duplicate Transaction Reference",
+  "INVALID_CALLBACK_URL": "Invalid Callback URL Configuration",
+  "TOKEN_EXPIRED": "Session Expired - Please Retry"
+};
+
+const AIRTEL_ERROR_MAP = {
+  "DP_REQUEST_FAILED": "Payment Request Failed - Please Retry",
+  "DP_PENDING": "Transaction Pending - Awaiting Confirmation",
+  "DP_SUCCESS": "Transaction Successful",
+  "DP_INVALID_MSISDN": "Invalid Phone Number",
+  "DP_INVALID_AMOUNT": "Invalid Transaction Amount",
+  "DP_INVALID_REFERENCE": "Invalid Transaction Reference",
+  "DP_INSUFFICIENT_BALANCE": "Insufficient Balance",
+  "DP_SERVICE_UNAVAILABLE": "Service Temporarily Unavailable",
+  "DP_LIMIT_EXCEEDED": "Daily Transaction Limit Exceeded",
+  "DP_DUPLICATE_REFERENCE": "Duplicate Transaction Reference",
+  "DP_AUTH_FAILED": "Authentication Failed",
+  "DP_TIMEOUT": "Transaction Timed Out",
+  "DP_SYSTEM_ERROR": "System Error - Please Retry",
+  "DS_SUCCESS": "Disbursement Successful",
+  "DS_REQUEST_FAILED": "Disbursement Failed - Please Retry",
+  "DS_PENDING": "Disbursement Pending"
+};
+
+const unmappedErrors = [];
+
+function mapProviderError(errorCode, provider) {
+  if (errorCode === null || errorCode === undefined) return "Unknown Error";
+  const code = String(errorCode).trim();
+  let mapped;
+  if (provider === "mtn" || !provider) {
+    mapped = MTN_ERROR_MAP[code];
+    if (mapped) return mapped;
+  }
+  if (provider === "airtel") {
+    mapped = AIRTEL_ERROR_MAP[code];
+    if (mapped) return mapped;
+  }
+  unmappedErrors.push({ code, provider, timestamp: new Date().toISOString() });
+  console.warn("[errorMapper] Unmapped error code:", code, "for provider:", provider);
+  return "Error: " + code;
+}
+
+function getTransactionErrorMessage(error, provider) {
+  if (!error) return "Unknown Error";
+  if (typeof error === "string") {
+    if (/^\d{4}$/.test(error) || /^[A-Z_]/.test(error)) {
+      return mapProviderError(error, provider);
+    }
+    return error;
+  }
+  if (typeof error === "object" && error !== null) {
+    const code = error.code || error.errorCode || error.status || error.message;
+    if (code) return mapProviderError(String(code), provider);
+  }
+  return "Unknown Error";
+}
+
+// Provider Failover Dashboard (#1550)
+async function toggleProvider(provider, currentlyEnabled) {
+  const token = window.prompt(
+    "Admin auth token required to change provider state:",
+  );
+  if (!token) return;
+
+  const reason = currentlyEnabled
+    ? window.prompt("Reason for disabling this provider (optional):", "") || undefined
+    : undefined;
+
+  try {
+    const res = await fetch(
+      `/api/admin/monitoring/provider-maintenance/${encodeURIComponent(provider)}/toggle`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ enabled: !currentlyEnabled, reason }),
+      },
+    );
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert(`Failed to toggle ${provider}: ${body.message || res.status}`);
+      return;
+    }
+
+    await loadProviderMaintenance();
+  } catch (err) {
+    alert(`Failed to toggle ${provider}: ${err.message || "network error"}`);
+  }
+}
+
+function renderProviderCard(p) {
+  const statusClass = p.enabled ? "failover-online" : "failover-offline";
+  const statusText = p.enabled ? "Online" : "Offline";
+  const reasonHtml =
+    !p.enabled && p.disabledReason
+      ? `<div class="failover-reason">Reason: ${p.disabledReason}</div>`
+      : "";
+
+  const card = document.createElement("div");
+  card.className = `failover-card glass ${statusClass}`;
+  card.innerHTML = `
+    <div class="failover-provider-name">${p.provider.toUpperCase()}</div>
+    <div class="failover-status">${statusText}</div>
+    ${reasonHtml}
+    <button class="btn-toggle-provider" data-provider="${p.provider}" data-enabled="${p.enabled}">
+      ${p.enabled ? "Take Offline" : "Bring Online"}
+    </button>
+  `;
+  card
+    .querySelector(".btn-toggle-provider")
+    .addEventListener("click", () => toggleProvider(p.provider, p.enabled));
+  return card;
+}
+
+async function loadProviderMaintenance() {
+  const grid = document.getElementById("failover-grid");
+  const updatedAt = document.getElementById("failover-updated-at");
+  if (!grid) return;
+
+  try {
+    const res = await fetch("/api/monitoring/provider-maintenance");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.success || !Array.isArray(data.providers)) {
+      throw new Error("Unexpected response");
+    }
+
+    grid.innerHTML = "";
+    if (data.providers.length === 0) {
+      grid.innerHTML = '<p class="failover-loading">No providers configured yet.</p>';
+    } else {
+      data.providers.forEach((p) => grid.appendChild(renderProviderCard(p)));
+    }
+
+    if (updatedAt) updatedAt.textContent = new Date().toLocaleTimeString();
+  } catch (err) {
+    grid.innerHTML = '<p class="failover-loading">Failed to load provider states.</p>';
+    if (updatedAt) updatedAt.textContent = "unavailable";
+  }
+}
+
+loadProviderMaintenance();
+setInterval(loadProviderMaintenance, 60000);
+
+const btnRefreshFailover = document.getElementById("btn-refresh-failover");
+if (btnRefreshFailover)
+  btnRefreshFailover.addEventListener("click", loadProviderMaintenance);
+
+// Compliance Overrides Dashboard (#1574)
+async function overrideKycDecision(applicantRecordId, overrideStatus) {
+  const token = window.prompt(
+    "Admin auth token required to override this KYC decision:",
+  );
+  if (!token) return;
+
+  const reason =
+    window.prompt(`Reason for marking as ${overrideStatus} (optional):`, "") ||
+    undefined;
+
+  try {
+    const res = await fetch(
+      `/api/admin/monitoring/compliance/overrides/${encodeURIComponent(applicantRecordId)}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ overrideStatus, reason }),
+      },
+    );
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert(`Failed to override decision: ${body.message || res.status}`);
+      return;
+    }
+
+    await loadComplianceOverrides();
+  } catch (err) {
+    alert(`Failed to override decision: ${err.message || "network error"}`);
+  }
+}
+
+function renderComplianceCard(a) {
+  const effectiveStatus = a.override_status || a.verification_status;
+  const statusClass =
+    effectiveStatus === "approved"
+      ? "failover-online"
+      : effectiveStatus === "rejected"
+        ? "failover-offline"
+        : "";
+  const overrideHtml = a.override_status
+    ? `<div class="failover-reason">Manually overridden to "${a.override_status}"${a.override_reason ? `: ${a.override_reason}` : ""}</div>`
+    : "";
+
+  const card = document.createElement("div");
+  card.className = `failover-card glass ${statusClass}`;
+  card.innerHTML = `
+    <div class="failover-provider-name">${a.phone_number || a.applicant_id}</div>
+    <div class="failover-status">${effectiveStatus}</div>
+    ${overrideHtml}
+    <button class="btn-toggle-provider" data-action="approved">Approve</button>
+    <button class="btn-toggle-provider" data-action="rejected">Reject</button>
+  `;
+  card
+    .querySelector('[data-action="approved"]')
+    .addEventListener("click", () => overrideKycDecision(a.id, "approved"));
+  card
+    .querySelector('[data-action="rejected"]')
+    .addEventListener("click", () => overrideKycDecision(a.id, "rejected"));
+  return card;
+}
+
+async function loadComplianceOverrides() {
+  const grid = document.getElementById("compliance-grid");
+  const updatedAt = document.getElementById("compliance-updated-at");
+  if (!grid) return;
+
+  try {
+    const res = await fetch("/api/admin/monitoring/compliance/overrides");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.success || !Array.isArray(data.applicants)) {
+      throw new Error("Unexpected response");
+    }
+
+    grid.innerHTML = "";
+    if (data.applicants.length === 0) {
+      grid.innerHTML = '<p class="failover-loading">No KYC applicants found.</p>';
+    } else {
+      data.applicants.forEach((a) => grid.appendChild(renderComplianceCard(a)));
+    }
+
+    if (updatedAt) updatedAt.textContent = new Date().toLocaleTimeString();
+  } catch (err) {
+    grid.innerHTML = '<p class="failover-loading">Failed to load compliance overrides.</p>';
+    if (updatedAt) updatedAt.textContent = "unavailable";
+  }
+}
+
+loadComplianceOverrides();
+
+const btnRefreshCompliance = document.getElementById("btn-refresh-compliance");
+if (btnRefreshCompliance)
+  btnRefreshCompliance.addEventListener("click", loadComplianceOverrides);
+
+// Refund Status Inspection Portal (#1669)
+async function triggerRefund(transactionId) {
+  const token = window.prompt(
+    "Admin auth token required to trigger this refund:",
+  );
+  if (!token) return;
+
+  try {
+    const res = await fetch(`/api/admin/transactions/${encodeURIComponent(transactionId)}/refund`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const body = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      alert(`Failed to trigger refund: ${body.message || body.error || res.status}`);
+      return;
+    }
+
+    alert(`Refund processed: ${body.refundAmount ?? ""}`.trim());
+    await loadFailedTransactions();
+  } catch (err) {
+    alert(`Failed to trigger refund: ${err.message || "network error"}`);
+  }
+}
+
+function refundStatusLabel(t) {
+  if (t.refundStatus === "completed") return "Refunded";
+  if (t.refundStatus === "processing") return "Refund in progress";
+  if (t.refundStatus === "failed") return "Refund failed";
+  return "Not refunded";
+}
+
+function renderRefundRow(t) {
+  const statusClass =
+    t.refundStatus === "completed"
+      ? "failover-online"
+      : t.refundStatus === "failed"
+        ? "failover-offline"
+        : "";
+
+  const card = document.createElement("div");
+  card.className = `failover-card glass ${statusClass}`;
+  card.innerHTML = `
+    <div class="failover-provider-name">${t.referenceNumber}</div>
+    <div class="failover-status">${t.status} · ${t.provider}</div>
+    <div class="failover-reason">${t.phoneNumber} &nbsp;·&nbsp; Amount: ${t.amount}</div>
+    <div class="failover-reason" id="refund-status-${t.id}">${refundStatusLabel(t)}${t.refundReason ? `: ${t.refundReason}` : ""}</div>
+    <button class="btn-toggle-provider" data-action="refund" ${t.refundEligible ? "" : "disabled"}>
+      Trigger Refund
+    </button>
+  `;
+  const refundBtn = card.querySelector('[data-action="refund"]');
+  if (t.refundEligible) {
+    refundBtn.addEventListener("click", () => triggerRefund(t.id));
+  }
+  return card;
+}
+
+async function loadFailedTransactions() {
+  const grid = document.getElementById("refund-grid");
+  const updatedAt = document.getElementById("refund-updated-at");
+  if (!grid) return;
+
+  try {
+    const res = await fetch("/api/admin/monitoring/refunds/failed-transactions");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.success || !Array.isArray(data.transactions)) {
+      throw new Error("Unexpected response");
+    }
+
+    grid.innerHTML = "";
+    if (data.transactions.length === 0) {
+      grid.innerHTML = '<p class="failover-loading">No failed transactions found.</p>';
+    } else {
+      data.transactions.forEach((t) => grid.appendChild(renderRefundRow(t)));
+    }
+
+    if (updatedAt) updatedAt.textContent = new Date().toLocaleTimeString();
+  } catch (err) {
+    grid.innerHTML = '<p class="failover-loading">Failed to load failed transactions.</p>';
+    if (updatedAt) updatedAt.textContent = "unavailable";
+  }
+}
+
+loadFailedTransactions();
+
+const btnRefreshRefunds = document.getElementById("btn-refresh-refunds");
+if (btnRefreshRefunds)
+  btnRefreshRefunds.addEventListener("click", loadFailedTransactions);
