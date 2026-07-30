@@ -1,7 +1,7 @@
 import logger from "../utils/logger";
 import tracer from "../tracer";
-import { Worker, Job } from "bullmq";
-import { queueOptions } from "./config";
+import { Worker, Job, RateLimitError as BullMQRateLimitError } from "bullmq";
+import { queueOptions, getTelecomProviderLimits } from "./config";
 import { SyncJobData, SyncJobResult, SYNC_QUEUE_NAME } from "./syncQueue";
 import {
   AccountingService,
@@ -234,7 +234,6 @@ export async function processSyncJob(
     const latencyMs = Date.now() - startedAt;
 
     if (isTransient) {
-      // Log transient failure. BullMQ will automatically reschedule with exponential backoff.
       logger.warn(
         {
           ...logFields,
@@ -252,6 +251,12 @@ export async function processSyncJob(
         },
         "Transient error during accounting sync - will retry with backoff",
       );
+      
+      // Dynamic Throttling: If external API hits a rate limit, safely delay worker processing natively
+      if (error instanceof RateLimitError) {
+        throw new BullMQRateLimitError(5000); // 5 second cool-down period
+      }
+
       throw error;
     } else {
       // Permanent error (e.g. ValidationError)
@@ -466,13 +471,20 @@ async function processNatsSyncMessage(
 // BullMQ Worker (active when NATS_QUEUE_ENABLED !== "true")
 // ---------------------------------------------------------------------------
 
-// Instantiate the BullMQ Worker
+// Fetch limits specifically matched to the active telecom/provider 
+const providerLimits = getTelecomProviderLimits(process.env.ACTIVE_PROVIDER);
+const resolvedConcurrency = process.env.SYNC_WORKER_CONCURRENCY 
+  ? SYNC_CONCURRENCY 
+  : providerLimits.concurrency;
+
+// Instantiate the BullMQ Worker dynamically restricted to provider API boundaries
 export const syncWorker = new Worker<SyncJobData, SyncJobResult>(
   SYNC_QUEUE_NAME,
   processSyncJob,
   {
     ...queueOptions,
-    concurrency: SYNC_CONCURRENCY, // Safe concurrency limit for accounting API rate-limits
+    concurrency: resolvedConcurrency, // Dynamic concurrency limit set via telecom configs
+    limiter: providerLimits.limiter,  // Ensures execution strictly matches provider speed boundaries
   },
 );
 
@@ -492,7 +504,7 @@ if (NATS_QUEUE_ENABLED) {
       NATS_SYNC_DURABLE_CONSUMER,
       NATS_SYNC_CONSUMER_GROUP,
       processNatsSyncMessage,
-      SYNC_CONCURRENCY,
+      resolvedConcurrency, // Synchronize NATS concurrency with telecom limits 
     )
     .catch((err) =>
       console.error("[SyncWorker] [NATS] JetStream consumer error:", err),
