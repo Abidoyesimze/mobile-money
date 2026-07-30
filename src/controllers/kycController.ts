@@ -8,21 +8,8 @@ import { createError } from "../middleware/errorHandler";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { validateExpiryDate } from "../utils/validators";
 import { getPepCheckService } from "../services/compliance/pepCheck";
-import {
-  commit,
-  commitWithBlinding,
-  verifyEqualOpenings,
-} from "../crypto/zkBalanceProof";
-import {
-  signCommitment,
-  verifyCommitmentSignature,
-  verifyRange,
-} from "../crypto/zkKycProof";
-import elliptic from "elliptic";
+import ZkProofService from "../services/compliance/zkProofService";
 import logger from "../utils/logger";
-
-const ecInstance = new elliptic.ec("secp256k1");
-const FALLBACK_PRIVATE_KEY = ecInstance.genKeyPair().getPrivate("hex");
 
 // Validation schemas
 const CreateApplicantSchema = z.object({
@@ -97,14 +84,29 @@ const GenerateSDKTokenSchema = z.object({
   application_id: z.string(),
 });
 
+const IssueAddressProofSchema = z.object({
+  applicant_id: z.string().min(1, "applicant_id is required"),
+  filename: z.string().min(1, "filename is required"),
+  mime_type: z.string().min(1, "mime_type is required"),
+  utility_bill_data: z.string().min(1, "utility_bill_data is required"),
+  provider_reference: z.string().optional(),
+});
+
+const VerifyAddressProofSchema = z.object({
+  proof_id: z.string().uuid().optional(),
+  applicant_id: z.string().optional(),
+});
+
 export class KYCController {
   private kycService: KYCService;
+  private zkProofService: ZkProofService;
   private db: Pool;
   private userModel: UserModel;
 
   constructor(db: Pool) {
     this.db = db;
     this.kycService = new KYCService(db);
+    this.zkProofService = new ZkProofService(db);
     this.userModel = new UserModel();
   }
 
@@ -475,20 +477,35 @@ export class KYCController {
 
       // Get latest KYC applicant data if exists
       const applicantQuery = `
-      SELECT applicant_id, verification_status, kyc_level, updated_at
-      FROM kyc_applicants 
-      WHERE user_id = $1 
-      ORDER BY updated_at DESC 
+      SELECT applicant_id, verification_status, kyc_level, applicant_data, updated_at
+      FROM kyc_applicants
+      WHERE user_id = $1
+      ORDER BY updated_at DESC
       LIMIT 1
     `;
       const applicantResult = await this.db.query(applicantQuery, [userId]);
+      const latestVerification = applicantResult.rows[0]
+        ? {
+            applicant_id: applicantResult.rows[0].applicant_id,
+            verification_status: applicantResult.rows[0].verification_status,
+            kyc_level: applicantResult.rows[0].kyc_level,
+            updated_at: applicantResult.rows[0].updated_at,
+            zk_proof:
+              applicantResult.rows[0].applicant_data?.last_zk_proof || null,
+            compliance_score:
+              applicantResult.rows[0].applicant_data?.last_compliance_score ??
+              null,
+            compliance_checks:
+              applicantResult.rows[0].applicant_data?.last_compliance_checks || [],
+          }
+        : null;
 
       res.json({
         success: true,
         data: {
           current_kyc_level: currentKYCLevel,
           transaction_limits: transactionLimits,
-          latest_verification: applicantResult.rows[0] || null,
+          latest_verification: latestVerification,
         },
       });
     } catch (error) {
@@ -589,7 +606,7 @@ export class KYCController {
   }
 
   /**
-   * Issue ZK credential ( Pedersen commitment + signature )
+   * Issue an address-validity ZK proof and store it in the proof vault.
    * POST /api/kyc/zk/issue-credential
    */
   issueZkCredential = async (req: Request, res: Response) => {
@@ -599,37 +616,35 @@ export class KYCController {
         throw createError(ERROR_CODES.UNAUTHORIZED, "User not authenticated");
       }
 
-      const { attribute_type, attribute_value } = req.body;
-      if (!attribute_type || attribute_value === undefined) {
-        throw createError(
-          ERROR_CODES.INVALID_INPUT,
-          "attribute_type and attribute_value are required",
-        );
+      const validatedData = IssueAddressProofSchema.parse(req.body);
+      const hasAccess = await this.verifyApplicantAccess(
+        userId,
+        validatedData.applicant_id,
+      );
+      if (!hasAccess) {
+        throw createError(ERROR_CODES.FORBIDDEN, "Access denied", {
+          error: "Access denied",
+        });
       }
 
-      const value = BigInt(attribute_value);
-      const { commitment, opening } = commit(value);
-
-      const authorityPrivateKey =
-        process.env.KYC_AUTHORITY_PRIVATE_KEY || FALLBACK_PRIVATE_KEY;
-      const signature = signCommitment(
-        authorityPrivateKey,
-        commitment.hex,
-        attribute_type,
+      const proof = await this.zkProofService.issueAddressProof(
+        userId,
+        validatedData,
       );
 
       res.status(201).json({
         success: true,
-        data: {
-          commitment: commitment.hex,
-          blinding: opening.blinding.toString(),
-          value: opening.value.toString(),
-          attribute_type,
-          signature,
-        },
+        data: proof,
       });
     } catch (error) {
       logger.error("Issue ZK credential error:", error);
+      if (error instanceof z.ZodError) {
+        const primaryMessage = error.issues[0]?.message || "Validation error";
+        throw createError(ERROR_CODES.INVALID_INPUT, primaryMessage, {
+          error: primaryMessage,
+          details: error.issues,
+        });
+      }
       if ((error as any).statusCode) throw error;
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
@@ -639,7 +654,7 @@ export class KYCController {
   };
 
   /**
-   * Verify ZK proof (range proof or equality proof)
+   * Verify an address-validity proof that has already been stored.
    * POST /api/kyc/zk/verify-proof
    */
   verifyZkProof = async (req: Request, res: Response) => {
@@ -649,71 +664,44 @@ export class KYCController {
         throw createError(ERROR_CODES.UNAUTHORIZED, "User not authenticated");
       }
 
-      const { commitment, attribute_type, signature, proof, expected_value } =
-        req.body;
-      if (
-        !commitment ||
-        !attribute_type ||
-        !signature ||
-        !proof ||
-        expected_value === undefined
-      ) {
-        throw createError(ERROR_CODES.INVALID_INPUT, "Missing required fields");
-      }
-
-      // Verify signature on commitment
-      const authorityPrivateKey =
-        process.env.KYC_AUTHORITY_PRIVATE_KEY || FALLBACK_PRIVATE_KEY;
-      const authorityPublicKey =
-        process.env.KYC_AUTHORITY_PUBLIC_KEY ||
-        ecInstance.keyFromPrivate(authorityPrivateKey, "hex").getPublic("hex");
-
-      const isSignatureValid = verifyCommitmentSignature(
-        authorityPublicKey,
-        commitment,
-        attribute_type,
-        signature,
-      );
-      if (!isSignatureValid) {
+      const validatedData = VerifyAddressProofSchema.parse(req.body);
+      if (!validatedData.proof_id && !validatedData.applicant_id) {
         throw createError(
           ERROR_CODES.INVALID_INPUT,
-          "Invalid authority signature on credential",
+          "proof_id or applicant_id is required",
         );
       }
 
-      const point = ecInstance.curve.decodePoint(
-        Buffer.from(commitment, "hex"),
+      if (validatedData.applicant_id) {
+        const hasAccess = await this.verifyApplicantAccess(
+          userId,
+          validatedData.applicant_id,
+        );
+        if (!hasAccess) {
+          throw createError(ERROR_CODES.FORBIDDEN, "Access denied", {
+            error: "Access denied",
+          });
+        }
+      }
+
+      const proof = await this.zkProofService.verifyAddressProof(
+        userId,
+        validatedData,
       );
-      const commitObj = { point, hex: commitment };
-
-      let isProofValid = false;
-      if (attribute_type === "age") {
-        const threshold = BigInt(expected_value);
-        isProofValid = verifyRange(commitObj, proof, threshold, 8);
-      } else if (attribute_type === "nationality") {
-        isProofValid = verifyEqualOpenings(
-          commitObj,
-          commitWithBlinding(BigInt(expected_value), 0n),
-          proof,
-        );
-      }
-
-      if (!isProofValid) {
-        throw createError(
-          ERROR_CODES.INVALID_INPUT,
-          "ZK proof verification failed",
-        );
-      }
-
-      // Proof verified, update user to Tier-3 (Full)
-      await this.kycService.updateUserKYCLevel(userId, KYCLevel.FULL);
 
       res.status(200).json({
         success: true,
-        message: "KYC Tier-3 verified successfully via ZK proof",
+        data: proof,
       });
     } catch (error) {
       logger.error("Verify ZK proof error:", error);
+      if (error instanceof z.ZodError) {
+        const primaryMessage = error.issues[0]?.message || "Validation error";
+        throw createError(ERROR_CODES.INVALID_INPUT, primaryMessage, {
+          error: primaryMessage,
+          details: error.issues,
+        });
+      }
       if ((error as any).statusCode) throw error;
       throw createError(
         ERROR_CODES.INTERNAL_ERROR,
