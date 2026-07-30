@@ -522,6 +522,102 @@ terraform plan -var-file=environments/production.tfvars
 terraform apply
 ```
 
+### Render
+ 
+Render deploys directly from GitHub and provisions Postgres/Redis as managed add-ons — a fast path for staging environments or small production deployments.
+ 
+**1. Link the repository**
+ 
+1. Push your fork to GitHub (see [Contributing](#-contributing) for the fork workflow)
+2. In the [Render Dashboard](https://dashboard.render.com), click **New → Web Service**
+3. Choose **Build and deploy from a Git repository**, authorize GitHub, and select `mobile-money`
+4. Pick the branch to deploy (typically `main`) — Render redeploys automatically on every push
+**2. Provision the database and Redis**
+ 
+1. **New → PostgreSQL** → copy the generated **Internal Database URL**
+2. **New → Key Value** (Render's managed Redis-compatible store) → copy the connection string
+**3. Configure environment variables**
+ 
+Set these under the Web Service's **Environment** tab:
+ 
+```bash
+DATABASE_URL=<Render PostgreSQL Internal Database URL>
+DATABASE_SSL=true
+ 
+REDIS_URL=<Render Key Value connection string>
+REDIS_TLS=true
+ 
+STELLAR_NETWORK=testnet
+STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
+STELLAR_ISSUER_SECRET=S...
+ 
+JWT_SECRET=your_jwt_secret_min_32_chars
+SESSION_SECRET=your_session_secret
+```
+ 
+**4. Build, migrate, and deploy**
+ 
+- **Build Command**: `npm install && npm run build`
+- **Start Command**: `npm start`
+- **Pre-Deploy Command**: `npm run migrate:up`
+- **Health Check Path**: `/health`
+```bash
+curl https://<your-service>.onrender.com/health
+curl https://<your-service>.onrender.com/ready
+```
+ 
+### Railway
+ 
+Railway offers a similarly GitHub-native deploy flow with one-click Postgres and Redis plugins.
+ 
+**1. Link the repository**
+ 
+1. In the [Railway Dashboard](https://railway.app/dashboard), click **New Project → Deploy from GitHub repo**
+2. Authorize the Railway GitHub App and select `mobile-money`
+3. Railway detects the Node.js app and auto-generates a build/start config (or use the CLI below)
+```bash
+npm install -g @railway/cli
+railway login
+railway link          # Link this directory to your Railway project
+railway up            # Deploy the current branch
+```
+ 
+**2. Provision the database and Redis**
+ 
+1. In the project canvas, click **New → Database → Add PostgreSQL**
+2. Click **New → Database → Add Redis**
+3. Railway automatically injects `DATABASE_URL` and `REDIS_URL` into your service's environment as reference variables
+**3. Configure environment variables**
+ 
+Under the service's **Variables** tab, add the remaining required config (Railway auto-fills `DATABASE_URL`/`REDIS_URL` from the plugins above):
+ 
+```bash
+DATABASE_SSL=true
+REDIS_TLS=false   # Railway's internal Redis network doesn't require TLS
+ 
+STELLAR_NETWORK=testnet
+STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
+STELLAR_ISSUER_SECRET=S...
+ 
+JWT_SECRET=your_jwt_secret_min_32_chars
+SESSION_SECRET=your_session_secret
+```
+ 
+**4. Build, migrate, and deploy**
+ 
+Railway runs `npm install` and `npm start` by default. To run migrations on each deploy, add a **Deploy Trigger** or **Release Command**:
+ 
+```bash
+railway run npm run migrate:up
+```
+ 
+Set the **Healthcheck Path** to `/health` under **Settings → Deploy** so Railway restarts the service on failed checks.
+ 
+```bash
+railway domain   # Generates a public URL
+curl https://<your-service>.up.railway.app/health
+```
+
 ### CI/CD
 
 GitHub Actions pipeline (`.github/workflows/ci.yml`):
