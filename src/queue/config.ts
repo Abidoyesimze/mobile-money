@@ -17,6 +17,33 @@ export const queueOptions: QueueOptions = {
 };
 
 // ---------------------------------------------------------------------------
+// Telecom Provider Speed & Rate Limit Configurations
+// ---------------------------------------------------------------------------
+export interface ProviderRateLimit {
+  concurrency: number;
+  limiter: {
+    max: number;
+    duration: number;
+  };
+}
+
+export const telecomProviderLimits: Record<string, ProviderRateLimit> = {
+  MTN: { concurrency: 10, limiter: { max: 50, duration: 1000 } },
+  AIRTEL: { concurrency: 5, limiter: { max: 20, duration: 1000 } },
+  VODAFONE: { concurrency: 8, limiter: { max: 30, duration: 1000 } },
+  // Safe default fallback boundary
+  DEFAULT: { concurrency: 3, limiter: { max: 10, duration: 1000 } },
+};
+
+/**
+ * Dynamically resolves rate limits matching a telecom provider's speed capabilities.
+ */
+export function getTelecomProviderLimits(provider?: string): ProviderRateLimit {
+  const activeProvider = (provider || process.env.TELECOM_PROVIDER || "DEFAULT").toUpperCase();
+  return telecomProviderLimits[activeProvider] || telecomProviderLimits.DEFAULT;
+}
+
+// ---------------------------------------------------------------------------
 // Internal helper – parse a positive integer from an env var, returning null
 // when the var is absent, empty, or not a valid positive integer.
 // ---------------------------------------------------------------------------
