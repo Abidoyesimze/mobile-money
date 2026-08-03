@@ -1,4 +1,5 @@
 import logger from "../utils/logger";
+import { validateExpiryDate } from "../utils/validators";
 import { NextFunction, Router } from "express";
 import { Pool } from "pg";
 import { KYCController } from "../controllers/kycController";
@@ -124,7 +125,33 @@ export const createKYCRoutes = (db: Pool): Router => {
         }
 
         // Get required metadata from request body first
-        const { applicant_id, document_type, document_side } = req.body;
+        const {
+          applicant_id,
+          document_type,
+          document_side,
+          expiry_date,
+          expiryDate,
+          expiration_date,
+          expirationDate,
+        } = req.body;
+
+        const rawExpiryDate =
+          expiry_date || expiryDate || expiration_date || expirationDate;
+
+        if (
+          rawExpiryDate !== undefined &&
+          rawExpiryDate !== null &&
+          rawExpiryDate !== ""
+        ) {
+          const isValidExpiry = validateExpiryDate(rawExpiryDate);
+          if (!isValidExpiry) {
+            throw createError(
+              ERROR_CODES.INVALID_INPUT,
+              "Invalid expiry date",
+              { error: "Invalid expiry date" }
+            );
+          }
+        }
 
         if (!applicant_id) {
           throw createError(

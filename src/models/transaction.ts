@@ -14,6 +14,7 @@ export type AssetType = "native" | "credit_alphanum4" | "credit_alphanum12";
 
 export enum TransactionStatus {
   Pending = "pending",
+  Processing = "processing",
   Completed = "completed",
   Failed = "failed",
   Cancelled = "cancelled",
@@ -537,6 +538,23 @@ export class TransactionModel {
     return this.list(limit, offset, undefined, undefined, { statuses });
   }
 
+  async findRefundableFailedPayouts(limit = 100): Promise<Transaction[]> {
+    const cappedLimit = Math.min(Math.max(Math.trunc(limit), 1), 500);
+    const result = await queryRead(
+      `SELECT ${TRANSACTION_SELECT_COLUMNS}
+       FROM transactions
+       WHERE type = 'withdraw'
+         AND status = $1
+         AND COALESCE(metadata->'refund'->>'completedAt', '') = ''
+         AND COALESCE(metadata->'refund'->>'status', '') <> 'processing'
+       ORDER BY updated_at ASC, created_at ASC
+       LIMIT $2`,
+      [TransactionStatus.Failed, cappedLimit],
+    );
+
+    return result.rows.map(mapTransactionRow).filter((t: any) => t !== null);
+  }
+
   async countByStatuses(statuses: TransactionStatus[] = []): Promise<number> {
     return this.count(undefined, undefined, { statuses });
   }
@@ -874,5 +892,25 @@ export class TransactionModel {
         id,
       ],
     );
+  }
+
+  /**
+   * Atomically claims a pending transaction for processing to prevent race conditions across parallel worker instances.
+   * Returns the transaction row if successfully claimed, or null if already claimed/processed.
+   */
+  async claimForProcessing(id: string): Promise<Transaction | null> {
+    const res = await queryWrite(
+      `UPDATE transactions
+       SET status = $1, updated_at = NOW()
+       WHERE id = $2 AND status = $3
+       RETURNING ${TRANSACTION_SELECT_COLUMNS}`,
+      [TransactionStatus.Processing, id, TransactionStatus.Pending],
+    );
+
+    if (!res.rows || res.rows.length === 0) {
+      return null;
+    }
+
+    return mapTransactionRow(res.rows[0]);
   }
 }

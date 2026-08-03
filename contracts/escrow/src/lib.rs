@@ -3,6 +3,9 @@
 
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env};
 
+mod storage;
+use storage::ESCROW;
+
 // ── Error types ──────────────────────────────────────────────────────────────
 
 /// Contract-level errors surfaced via the Soroban SDK error-code mechanism.
@@ -58,16 +61,16 @@ pub struct EscrowState {
 
 impl EscrowState {
     /// Compute (fee_amount, net_beneficiary_amount).
-    pub fn split(&self) -> (i128, i128) {
-        let fee = self.amount * self.fee_bps as i128 / 10_000;
-        let net = self.amount - fee;
-        (fee, net)
+    pub fn split(&self) -> Option<(i128, i128)> {
+        let fee = self.amount.checked_mul(self.fee_bps as i128)?.checked_div(10_000)?;
+        let net = self.amount.checked_sub(fee)?;
+        Some((fee, net))
     }
 }
 
-// ── Storage key ──────────────────────────────────────────────────────────────
-
-const ESCROW: &str = "ESCROW";
+fn ensure_trustline(env: &Env, token: &Address, recipient: &Address) {
+    token::StellarAssetClient::new(env, token).trust(recipient);
+}
 
 // ── Contract ─────────────────────────────────────────────────────────────────
 
@@ -100,6 +103,7 @@ impl EscrowContract {
         depositor.require_auth();
 
         assert!(amount > 0, "amount must be positive");
+        assert!(amount <= i128::MAX / 10_000, "amount is too large to prevent fee overflow");
 
         assert!(
             !env.storage().instance().has(&ESCROW),
@@ -177,9 +181,11 @@ impl EscrowContract {
 
         let tc = token::Client::new(&env, &state.token);
         let contract_addr = env.current_contract_address();
-        let (fee, net) = state.split();
+        let (fee, net) = state.split().ok_or(EscrowError::InvalidAmount)?;
 
+        ensure_trustline(&env, &state.token, &state.beneficiary);
         if fee > 0 {
+            ensure_trustline(&env, &state.token, &state.fee_recipient);
             tc.transfer(&contract_addr, &state.fee_recipient, &fee);
         }
         tc.transfer(&contract_addr, &state.beneficiary, &net);
@@ -303,9 +309,9 @@ impl EscrowContract {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger},
+        testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
         token::{Client as TokenClient, StellarAssetClient},
-        Address, Env,
+        Address, Env, IntoVal,
     };
 
     const MINT_AMOUNT: i128 = 1_000_000;
@@ -370,6 +376,42 @@ mod tests {
             &fee_bps,
             fee_recipient,
         );
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn setup_without_mock_auths() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        Address,
+        Address,
+        EscrowContractClient<'static>,
+    ) {
+        let env = Env::default();
+
+        let depositor = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token = token_id.address();
+        StellarAssetClient::new(&env, &token).mint(&depositor, &MINT_AMOUNT);
+
+        let contract_id = env.register(EscrowContract, ());
+        let client = EscrowContractClient::new(&env, &contract_id);
+
+        (
+            env,
+            depositor,
+            beneficiary,
+            arbiter,
+            fee_recipient,
+            token,
+            client,
+        )
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -514,6 +556,134 @@ mod tests {
 
         let token_client = TokenClient::new(&env, &token);
         assert_eq!(token_client.balance(&depositor), MINT_AMOUNT);
+        assert!(client.get_state().released);
+    }
+
+    #[test]
+    fn test_release_reverts_without_beneficiary_trustline_auth() {
+        let (env, depositor, beneficiary, arbiter, fee_recipient, token, client) =
+            setup_without_mock_auths();
+        let amount: i128 = 500_000;
+        let fee_bps: u32 = 250;
+        let emergency_unlock_timestamp = 1_000_u64;
+        let lock_until_ledger = 100_u32;
+
+        env.ledger().set_timestamp(100);
+
+        client
+            .mock_auths(&[MockAuth {
+                address: &depositor,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "initialize",
+                    args: (
+                        &depositor,
+                        &beneficiary,
+                        &arbiter,
+                        &token,
+                        amount,
+                        emergency_unlock_timestamp,
+                        lock_until_ledger,
+                        fee_bps,
+                        &fee_recipient,
+                    )
+                        .into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .initialize(
+                &depositor,
+                &beneficiary,
+                &arbiter,
+                &token,
+                &amount,
+                &emergency_unlock_timestamp,
+                &lock_until_ledger,
+                &fee_bps,
+                &fee_recipient,
+            );
+
+        let release_result = client
+            .mock_auths(&[MockAuth {
+                address: &arbiter,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "release",
+                    args: ().into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_release();
+
+        assert!(release_result.is_err());
+
+        let state = client.get_state();
+        assert!(!state.released);
+
+        let token_client = TokenClient::new(&env, &token);
+        assert_eq!(token_client.balance(&beneficiary), 0);
+        assert_eq!(token_client.balance(&fee_recipient), 0);
+        assert_eq!(token_client.balance(&env.current_contract_address()), amount);
+    }
+
+    #[test]
+    fn test_release_with_zero_fee_skips_fee_recipient_trustline_auth() {
+        let (env, depositor, beneficiary, arbiter, fee_recipient, token, client) =
+            setup_without_mock_auths();
+        let amount: i128 = 300_000;
+        let emergency_unlock_timestamp = 1_000_u64;
+        let lock_until_ledger = 50_u32;
+
+        env.ledger().set_timestamp(100);
+
+        client
+            .mock_auths(&[MockAuth {
+                address: &depositor,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "initialize",
+                    args: (
+                        &depositor,
+                        &beneficiary,
+                        &arbiter,
+                        &token,
+                        amount,
+                        emergency_unlock_timestamp,
+                        lock_until_ledger,
+                        0_u32,
+                        &fee_recipient,
+                    )
+                        .into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .initialize(
+                &depositor,
+                &beneficiary,
+                &arbiter,
+                &token,
+                &amount,
+                &emergency_unlock_timestamp,
+                &lock_until_ledger,
+                &0,
+                &fee_recipient,
+            );
+
+        client
+            .mock_auths(&[MockAuth {
+                address: &arbiter,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "release",
+                    args: ().into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .release();
+
+        let token_client = TokenClient::new(&env, &token);
+        assert_eq!(token_client.balance(&beneficiary), amount);
+        assert_eq!(token_client.balance(&fee_recipient), 0);
         assert!(client.get_state().released);
     }
 }

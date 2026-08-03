@@ -26,7 +26,11 @@ import { INDEX_REINDEX_CRON, INDEX_REINDEX_JOB_ENABLED } from "../config/env";
 import { runIndexReindexJob } from "./indexReindexJob";
 import { runSanctionSyncJob } from "./sanctionSyncJob";
 import { runJwtKeyRotationJob } from "./jwtKeyRotationJob";
+import { runRebalanceJobHandler } from "./rebalanceJob";
 import { startNotificationWorker } from "../workers/notificationWorker";
+import { runTravelRuleExportJob } from "../services/compliance/travelRuleExport";
+import { runDlqCleanupJob } from "../queue/dlq";
+import { runHighValueComplianceReportJob } from "./highValueComplianceReportJob";
 
 interface JobConfig {
   name: string;
@@ -174,10 +178,34 @@ const JOBS: JobConfig[] = [
     handler: runJwtKeyRotationJob,
   },
   {
+    name: "rebalance",
+    // Every 5 minutes — monitors operator balances and rebalances on float limit breach
+    schedule: process.env.REBALANCE_JOB_CRON || "*/5 * * * *",
+    handler: runRebalanceJobHandler,
+  },
+  {
     name: "sanction-sync",
-    // Daily at 1:00 AM - streams and indexes sanctions list updates, clears match cache
+    // Daily at 1:00 AM - syncs internal sanction list with global lists
     schedule: process.env.SANCTION_SYNC_CRON || "0 1 * * *",
     handler: runSanctionSyncJob,
+  },
+  {
+    name: "travel-rule-export",
+    // Hourly - exports pending Travel Rule compliance records to regulatory reporting endpoints
+    schedule: process.env.TRAVEL_RULE_EXPORT_CRON || "0 * * * *",
+    handler: runTravelRuleExportJob,
+  },
+  {
+    name: "high-value-compliance-report",
+    // Hourly - backfills missing high-value compliance reports for eligible AML alerts
+    schedule: process.env.HIGH_VALUE_COMPLIANCE_REPORT_CRON || "15 * * * *",
+    handler: runHighValueComplianceReportJob,
+  },
+  {
+    name: "dlq-cleanup",
+    // Daily at 3:30 AM — removes DLQ entries older than 90 days after overnight audit window
+    schedule: process.env.DLQ_CLEANUP_CRON || "30 3 * * *",
+    handler: runDlqCleanupJob,
   },
 ];
 

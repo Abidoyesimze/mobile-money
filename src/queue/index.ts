@@ -22,6 +22,7 @@ import {
   startWebhookRetryWorker,
   closeWebhookRetryWorker,
 } from "./webhookRetryWorker";
+import { closeRefundWorker, refundQueue, refundWorker } from "./refundWorker";
 
 export async function shutdownQueue(): Promise<void> {
   await Promise.all([
@@ -31,6 +32,7 @@ export async function shutdownQueue(): Promise<void> {
     transactionQueue.close().catch(() => undefined),
     syncQueue.close().catch(() => undefined),
     closeWebhookRetryWorker().catch(() => undefined),
+    closeRefundWorker().catch(() => undefined),
   ]);
 }
 
@@ -120,6 +122,17 @@ export {
   startWebhookRetryWorker,
   closeWebhookRetryWorker,
 } from "./webhookRetryWorker";
+
+export {
+  REFUND_QUEUE_NAME,
+  refundQueue,
+  refundWorker,
+  addRefundJob,
+  enqueueFailedPayoutRefunds,
+  startRefundWorker,
+  closeRefundWorker,
+} from "./refundWorker";
+export type { RefundJobData, RefundJobResult } from "./refundWorker";
 
 // Trace-ID propagation utilities
 export {

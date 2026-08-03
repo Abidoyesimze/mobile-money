@@ -1,9 +1,34 @@
+/**
+ * AirtelService
+ *
+ * Extends BaseProvider so that the Basic-auth credential signature and
+ * Bearer-token construction are inherited from the shared core config
+ * class rather than being duplicated inline.
+ *
+ * Also fixes a pre-existing bug where the original `authenticate()` method
+ * made two identical POST requests to `/auth/oauth2/token` — the outer call
+ * was discarded and the inner call (inside a try/catch) was used instead.
+ * The refactored implementation makes exactly one token request per refresh.
+ */
+
 import axios, {
   AxiosInstance,
   AxiosError,
   AxiosRequestConfig,
   AxiosResponse,
 } from "axios";
+import {
+  BaseProvider,
+  ProviderAuthConfig,
+} from "../../providers/baseProvider";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface AirtelTokenResponse {
+  access_token: string;
+  expires_in: number;
+  token_type?: string;
+}
 
 import logger from "../../../utils/logger";
 import { maskPII } from "../../../utils/masking";
@@ -38,6 +63,18 @@ interface AirtelBalanceResponse {
   availableBalance?: string | number;
   currency?: string;
 }
+
+// ─── Config builder ───────────────────────────────────────────────────────────
+
+function buildConfig(): ProviderAuthConfig {
+  return {
+    apiKey: process.env.AIRTEL_API_KEY ?? "",
+    apiSecret: process.env.AIRTEL_API_SECRET ?? "",
+    baseUrl: process.env.AIRTEL_BASE_URL ?? "",
+    timeoutMs: 10_000,
+  };
+}
+
 
 interface StoredCookie {
   value: string;
@@ -221,6 +258,34 @@ export class AirtelService {
     );
   }
 
+  private async withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
+    let lastError: Error | undefined;
+    for (let i = 0; i < retries; i++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastError = err as Error;
+        const axiosError = err as AxiosError;
+        if (axiosError.response?.status === 401) {
+          (this as any).token = null;
+          (this as any).tokenExpiry = 0;
+        }
+
+        if (
+          (axiosError.response?.status !== undefined &&
+            axiosError.response.status >= 500) ||
+          (err as { code?: string }).code === "ECONNABORTED"
+        ) {
+          console.warn(`Retrying Airtel request (${i + 1})`);
+          await new Promise((res) => setTimeout(res, 1000 * (i + 1)));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastError;
+  }
+
   private getDefaultCurrency(country: string): string {
     switch (country.toUpperCase()) {
       case "KE":
@@ -248,7 +313,6 @@ export class AirtelService {
       );
     }
   }
-
   // =========================================================================
   // CONFIGURATION
   // =========================================================================
@@ -472,7 +536,6 @@ export class AirtelService {
       };
     }
   }
-
   /**
    * =========================
    * REQUEST PAYMENT (COLLECTION)
@@ -488,7 +551,7 @@ export class AirtelService {
       const txStatus = String(
         (result.data as AirtelResponse)?.data?.transaction?.status ?? "",
       ).toUpperCase();
-      // Airtel status codes: TS = success, TF = failed, TP = pending
+      // TS = success, TF = failed, TP = pending
       if (txStatus === "TS") return { status: "completed" };
       if (txStatus === "TF") return { status: "failed" };
       if (txStatus === "TP") return { status: "pending" };
@@ -666,6 +729,7 @@ export class AirtelService {
 
     return this.toProviderResult(response, reference);
   }
+
 
   private async getBalanceViaDirect(): Promise<{
     success: boolean;
