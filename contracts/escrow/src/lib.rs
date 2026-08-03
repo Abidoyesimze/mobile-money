@@ -10,40 +10,64 @@ use storage::ESCROW;
 
 // ── Error types ──────────────────────────────────────────────────────────────
 
+/// Contract-level errors surfaced via the Soroban SDK error-code mechanism.
+/// The `#[contracterror]` attribute generates the required `From<soroban_sdk::Error>`
+/// impl so the generated client exposes `try_*` variants that return
+/// `Result<T, soroban_sdk::Error>` for testing failure paths.
 #[contracterror]
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(u32)]
 pub enum EscrowError {
+    /// Storage key already exists – contract is already initialised.
     AlreadyInitialised = 1,
+    /// Storage key not found – contract has not been initialised yet.
     NotInitialised = 2,
+    /// Funds have already been released or refunded.
     AlreadyReleased = 3,
+    /// The lock time has not yet expired; refund is premature.
     LockNotExpired = 4,
+    /// The lock time has already expired; arbiter release window is closed.
     LockExpired = 5,
+    /// Deposit amount must be strictly positive.
     InvalidAmount = 6,
+    /// Fee basis points must be in [0, 10_000].
     InvalidFeeBps = 7,
+    /// Beneficiary address must differ from depositor.
     InvalidBeneficiary = 8,
+    /// Arbiter address must differ from both depositor and beneficiary.
     InvalidArbiter = 9,
+    /// Upgrade attempted without admin signers configured.
     UpgradeNotConfigured = 10,
+    /// A signer passed to `upgrade` is not in the approved admin list.
     InvalidAdminSigner = 11,
+    /// Not enough valid admin signatures to authorise the upgrade.
     InsufficientAdminSignatures = 12,
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
 
+/// Persistent on-chain state for a single escrow instance.
 #[contracttype]
 #[derive(Clone)]
 pub struct EscrowState {
+    /// Party that deposited funds and can claim a refund after expiry.
     pub depositor: Address,
+    /// Party that receives funds on successful release.
     pub beneficiary: Address,
+    /// Neutral third party that authorises release / early refund.
     pub arbiter: Address,
+    /// SAC token address.
     pub token: Address,
+    /// Gross amount locked in escrow (before fee deduction).
     pub amount: i128,
     pub emergency_unlock_timestamp: u64,
     pub lock_until_ledger: u32,
     pub fee_bps: u32,
     pub fee_recipient: Address,
     pub released: bool,
+    /// Approved addresses that may co-sign a contract upgrade.
     pub admin_signers: Vec<Address>,
+    /// Minimum number of admin signatures required to perform an upgrade.
     pub required_admin_signatures: u32,
 }
 
@@ -56,6 +80,10 @@ impl EscrowState {
     }
 }
 
+fn ensure_trustline(env: &Env, token: &Address, recipient: &Address) {
+    token::StellarAssetClient::new(env, token).trust(recipient);
+}
+
 // ── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -65,6 +93,15 @@ pub struct EscrowContract;
 impl EscrowContract {
     // ── initialize ────────────────────────────────────────────────────────────
 
+    /// Initialise escrow. The depositor must authorise this call; `amount`
+    /// tokens are pulled from the depositor into the contract.
+    ///
+    /// * `lock_until_ledger`          – ledger after which the depositor may self-refund
+    ///   without the arbiter. Pass `0` to disable self-refund entirely.
+    /// * `fee_bps`                    – protocol fee in basis points (0–10 000).
+    /// * `fee_recipient`              – receives the fee portion on release.
+    /// * `admin_signers`              – approved addresses for multi-sig upgrades (empty = upgrades disabled).
+    /// * `required_admin_signatures`  – minimum cosigners needed for an upgrade.
     pub fn initialize(
         env: Env,
         depositor: Address,
@@ -88,15 +125,19 @@ impl EscrowContract {
             !env.storage().instance().has(&ESCROW),
             "already initialised"
         );
+
         assert!(
             emergency_unlock_timestamp > env.ledger().timestamp(),
             "emergency unlock must be in the future"
         );
+
         assert!(fee_bps <= 10_000, "fee basis points must be in [0, 10000]");
+
         assert!(
             depositor != beneficiary,
             "beneficiary must differ from depositor"
         );
+
         assert!(
             arbiter != depositor && arbiter != beneficiary,
             "arbiter must differ from depositor and beneficiary"
@@ -109,11 +150,17 @@ impl EscrowContract {
             );
         }
 
-        token::Client::new(&env, &token).transfer(
-            &depositor,
-            env.current_contract_address(),
-            &amount,
-        );
+        // Dynamic token support:
+        // Any Stellar asset can be passed through the token address.
+        let token_client = token::Client::new(&env, &token);
+
+        // Validate depositor balance before locking funds.
+        let balance = token_client.balance(&depositor);
+
+        assert!(balance >= amount, "insufficient token balance");
+
+        // Transfer only after validation succeeds.
+        token_client.transfer(&depositor, env.current_contract_address(), &amount);
 
         env.storage().instance().set(
             &ESCROW,
@@ -138,6 +185,8 @@ impl EscrowContract {
 
     // ── upgrade ───────────────────────────────────────────────────────────────
 
+    /// Upgrade the contract WASM. Requires at least `required_admin_signatures`
+    /// valid admin signatures. All signers passed must be in the approved list.
     pub fn upgrade(
         env: Env,
         new_wasm_hash: BytesN<32>,
@@ -177,6 +226,8 @@ impl EscrowContract {
 
     // ── release ───────────────────────────────────────────────────────────────
 
+    /// Release funds to the beneficiary (net of fee) and fee to `fee_recipient`.
+    /// Only the arbiter may call this, and only while the lock is still active.
     pub fn release(env: Env) -> Result<(), EscrowError> {
         let mut state: EscrowState = env
             .storage()
@@ -189,6 +240,7 @@ impl EscrowContract {
         if state.released {
             return Err(EscrowError::AlreadyReleased);
         }
+        // Arbiter cannot release after the lock has expired.
         if state.lock_until_ledger > 0 && env.ledger().sequence() > state.lock_until_ledger {
             return Err(EscrowError::LockExpired);
         }
@@ -197,7 +249,9 @@ impl EscrowContract {
         let contract_addr = env.current_contract_address();
         let (fee, net) = state.split().ok_or(EscrowError::InvalidAmount)?;
 
+        ensure_trustline(&env, &state.token, &state.beneficiary);
         if fee > 0 {
+            ensure_trustline(&env, &state.token, &state.fee_recipient);
             tc.transfer(&contract_addr, &state.fee_recipient, &fee);
         }
         tc.transfer(&contract_addr, &state.beneficiary, &net);
@@ -211,6 +265,8 @@ impl EscrowContract {
 
     // ── refund ────────────────────────────────────────────────────────────────
 
+    /// Return the full `amount` to the depositor.
+    /// Only the arbiter may call this, and only while the lock is still active.
     pub fn refund(env: Env) -> Result<(), EscrowError> {
         let mut state: EscrowState = env
             .storage()
@@ -240,6 +296,8 @@ impl EscrowContract {
         Ok(())
     }
 
+    /// Emergency refund to the depositor after the unlock timestamp.
+    /// Allows source wallets to recover funds during an extended bridge outage.
     pub fn emergency_refund(env: Env) {
         let mut state: EscrowState = env
             .storage()
@@ -266,6 +324,8 @@ impl EscrowContract {
 
     // ── self_refund ───────────────────────────────────────────────────────────
 
+    /// Allow the depositor to reclaim funds *after* the lock has expired,
+    /// without the arbiter. The full `amount` is returned.
     pub fn self_refund(env: Env) -> Result<(), EscrowError> {
         let mut state: EscrowState = env
             .storage()
@@ -278,6 +338,7 @@ impl EscrowContract {
         if state.released {
             return Err(EscrowError::AlreadyReleased);
         }
+        // Time-lock must have passed.
         if state.lock_until_ledger == 0 || env.ledger().sequence() <= state.lock_until_ledger {
             return Err(EscrowError::LockNotExpired);
         }
@@ -296,6 +357,7 @@ impl EscrowContract {
 
     // ── get_state ─────────────────────────────────────────────────────────────
 
+    /// Return current escrow state (read-only).
     pub fn get_state(env: Env) -> EscrowState {
         let state = env
             .storage()
@@ -313,9 +375,9 @@ impl EscrowContract {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger},
+        testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
         token::{Client as TokenClient, StellarAssetClient},
-        Address, Bytes, Env,
+        Address, Bytes, Env, IntoVal,
     };
 
     const MINT_AMOUNT: i128 = 1_000_000;
@@ -356,7 +418,7 @@ mod tests {
         )
     }
 
-    // Helper: initialise with common defaults
+    // Helper: initialise with common defaults (no admin signers)
     #[allow(clippy::too_many_arguments)]
     fn init(
         client: &EscrowContractClient,
@@ -384,6 +446,42 @@ mod tests {
             &admin_signers,
             &0,
         );
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn setup_without_mock_auths() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        Address,
+        Address,
+        EscrowContractClient<'static>,
+    ) {
+        let env = Env::default();
+
+        let depositor = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token = token_id.address();
+        StellarAssetClient::new(&env, &token).mint(&depositor, &MINT_AMOUNT);
+
+        let contract_id = env.register(EscrowContract, ());
+        let client = EscrowContractClient::new(&env, &contract_id);
+
+        (
+            env,
+            depositor,
+            beneficiary,
+            arbiter,
+            fee_recipient,
+            token,
+            client,
+        )
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -541,7 +639,149 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 2. Upgrade tests
+    // 2. Trustline / auth tests (from upstream)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_release_reverts_without_beneficiary_trustline_auth() {
+        let (env, depositor, beneficiary, arbiter, fee_recipient, token, client) =
+            setup_without_mock_auths();
+        let amount: i128 = 500_000;
+        let fee_bps: u32 = 250;
+        let emergency_unlock_timestamp = 1_000_u64;
+        let lock_until_ledger = 100_u32;
+
+        env.ledger().set_timestamp(100);
+
+        let admin_signers: Vec<Address> = Vec::new(&env);
+        client
+            .mock_auths(&[MockAuth {
+                address: &depositor,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "initialize",
+                    args: (
+                        &depositor,
+                        &beneficiary,
+                        &arbiter,
+                        &token,
+                        amount,
+                        emergency_unlock_timestamp,
+                        lock_until_ledger,
+                        fee_bps,
+                        &fee_recipient,
+                        &admin_signers,
+                        0_u32,
+                    )
+                        .into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .initialize(
+                &depositor,
+                &beneficiary,
+                &arbiter,
+                &token,
+                &amount,
+                &emergency_unlock_timestamp,
+                &lock_until_ledger,
+                &fee_bps,
+                &fee_recipient,
+                &admin_signers,
+                &0,
+            );
+
+        let release_result = client
+            .mock_auths(&[MockAuth {
+                address: &arbiter,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "release",
+                    args: ().into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_release();
+
+        assert!(release_result.is_err());
+
+        let state = client.get_state();
+        assert!(!state.released);
+
+        let token_client = TokenClient::new(&env, &token);
+        assert_eq!(token_client.balance(&beneficiary), 0);
+        assert_eq!(token_client.balance(&fee_recipient), 0);
+        assert_eq!(token_client.balance(&env.current_contract_address()), amount);
+    }
+
+    #[test]
+    fn test_release_with_zero_fee_skips_fee_recipient_trustline_auth() {
+        let (env, depositor, beneficiary, arbiter, fee_recipient, token, client) =
+            setup_without_mock_auths();
+        let amount: i128 = 300_000;
+        let emergency_unlock_timestamp = 1_000_u64;
+        let lock_until_ledger = 50_u32;
+
+        env.ledger().set_timestamp(100);
+
+        let admin_signers: Vec<Address> = Vec::new(&env);
+        client
+            .mock_auths(&[MockAuth {
+                address: &depositor,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "initialize",
+                    args: (
+                        &depositor,
+                        &beneficiary,
+                        &arbiter,
+                        &token,
+                        amount,
+                        emergency_unlock_timestamp,
+                        lock_until_ledger,
+                        0_u32,
+                        &fee_recipient,
+                        &admin_signers,
+                        0_u32,
+                    )
+                        .into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .initialize(
+                &depositor,
+                &beneficiary,
+                &arbiter,
+                &token,
+                &amount,
+                &emergency_unlock_timestamp,
+                &lock_until_ledger,
+                &0,
+                &fee_recipient,
+                &admin_signers,
+                &0,
+            );
+
+        client
+            .mock_auths(&[MockAuth {
+                address: &arbiter,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "release",
+                    args: ().into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .release();
+
+        let token_client = TokenClient::new(&env, &token);
+        assert_eq!(token_client.balance(&beneficiary), amount);
+        assert_eq!(token_client.balance(&fee_recipient), 0);
+        assert!(client.get_state().released);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 3. Upgrade tests (our branch)
     // ─────────────────────────────────────────────────────────────────────────
 
     #[test]
