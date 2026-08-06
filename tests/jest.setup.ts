@@ -179,7 +179,6 @@ jest.mock("../src/config/redis", () => ({
     setEx: jest.fn(),
     del: jest.fn(),
   },
-  createRedisStore: jest.fn().mockReturnValue({ on: jest.fn(), get: jest.fn((sid, cb) => cb && cb(null, null)), set: jest.fn((sid, session, cb) => cb && cb(null)), destroy: jest.fn((sid, cb) => cb && cb(null)) }),
-  SESSION_TTL_SECONDS: 86400,
+  createRedisStore: jest.fn().mockReturnValue({ on: jest.fn(), get: jest.fn((sid: any, cb: any) => cb && cb(null, null)), set: jest.fn((sid: any, session: any, cb: any) => cb && cb(null)), destroy: jest.fn((sid: any, cb: any) => cb && cb(null)) }),
   SESSION_TTL_SECONDS: 86400,
 }));

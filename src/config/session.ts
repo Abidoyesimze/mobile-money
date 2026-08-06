@@ -1,6 +1,5 @@
-const SESSION_TTL_SECONDS = parseInt(
-  process.env.SESSION_TTL_SECONDS || "86400",
-);
+import type { SessionOptions } from "express-session";
+import { SESSION_TTL_SECONDS } from "./redis";
 
 export interface SessionCookieConfig {
   httpOnly?: boolean;
