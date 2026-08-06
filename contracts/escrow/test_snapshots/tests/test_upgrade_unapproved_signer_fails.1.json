@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 7,
+    "address": 9,
     "nonce": 0,
     "mux_id": 0
   },
@@ -85,10 +85,14 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "vec": []
+                  "vec": [
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
+                    }
+                  ]
                 },
                 {
-                  "u32": 0
+                  "u32": 1
                 }
               ]
             }
@@ -118,7 +122,6 @@
         }
       ]
     ],
-    [],
     []
   ],
   "ledger": {
@@ -238,7 +241,11 @@
                               "symbol": "admin_signers"
                             },
                             "val": {
-                              "vec": []
+                              "vec": [
+                                {
+                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
+                                }
+                              ]
                             }
                           },
                           {
@@ -318,7 +325,7 @@
                               "symbol": "required_admin_signatures"
                             },
                             "val": {
-                              "u32": 0
+                              "u32": 1
                             }
                           },
                           {
