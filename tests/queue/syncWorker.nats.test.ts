@@ -21,6 +21,21 @@ function registerMocks(opts: {
   mockNatsClose = jest.fn().mockResolvedValue(undefined);
   mockWorkerClose = jest.fn().mockResolvedValue(undefined);
 
+  jest.mock("../../src/utils/logger", () => ({
+    __esModule: true,
+    default: {
+      info: jest.fn(),
+      warn: (meta: any, msg?: string) => {
+        console.warn(typeof meta === "string" ? meta : `${msg || ""} ${JSON.stringify(meta)}`);
+      },
+      error: (meta: any, msg?: string) => {
+        console.error(typeof meta === "string" ? meta : `${msg || ""} ${JSON.stringify(meta)}`);
+      },
+      debug: jest.fn(),
+      trace: jest.fn(),
+    },
+  }));
+
   jest.mock("../../src/queue/nats", () => ({
     NATS_QUEUE_ENABLED: opts.natsEnabled,
     NATS_ACK_WAIT_MS: 30000,
@@ -40,7 +55,10 @@ function registerMocks(opts: {
     })),
   }));
 
-  jest.mock("../../src/queue/config", () => ({ queueOptions: {} }));
+  jest.mock("../../src/queue/config", () => ({
+    queueOptions: {},
+    getTelecomProviderLimits: () => ({ concurrency: 3, limiter: { max: 10, duration: 1000 } }),
+  }));
 
   jest.mock("../../src/config/database", () => ({
     pool: { query: jest.fn().mockResolvedValue({ rows: [] }) },
@@ -347,7 +365,10 @@ describe("syncWorker — processNatsSyncMessage handler", () => {
       Worker: jest.fn().mockImplementation(() => ({ close: mockWorkerClose })),
     }));
 
-    jest.mock("../../src/queue/config", () => ({ queueOptions: {} }));
+    jest.mock("../../src/queue/config", () => ({
+      queueOptions: {},
+      getTelecomProviderLimits: () => ({ concurrency: 3, limiter: { max: 10, duration: 1000 } }),
+    }));
 
     jest.mock("../../src/tracer", () => ({
       __esModule: true,
@@ -448,7 +469,7 @@ describe("syncWorker — processNatsSyncMessage handler", () => {
 
     expect(msg.term).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Transient error for quickbooks sync"),
+      expect.stringContaining("Transient error during accounting sync"),
     );
 
     warnSpy.mockRestore();
@@ -468,7 +489,7 @@ describe("syncWorker — processNatsSyncMessage handler", () => {
 
     expect(msg.term).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Transient error for quickbooks sync"),
+      expect.stringContaining("Transient error during accounting sync"),
     );
 
     warnSpy.mockRestore();
@@ -488,7 +509,7 @@ describe("syncWorker — processNatsSyncMessage handler", () => {
 
     expect(msg.term).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Transient error for xero sync"),
+      expect.stringContaining("Transient error during accounting sync"),
     );
 
     warnSpy.mockRestore();
@@ -508,7 +529,7 @@ describe("syncWorker — processNatsSyncMessage handler", () => {
 
     expect(msg.term).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Transient error for xero sync"),
+      expect.stringContaining("Transient error during accounting sync"),
     );
 
     warnSpy.mockRestore();
@@ -530,7 +551,7 @@ describe("syncWorker — processNatsSyncMessage handler", () => {
 
     expect(msg.term).toHaveBeenCalledTimes(1);
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Permanent error for quickbooks sync"),
+      expect.stringContaining("Permanent error during accounting sync"),
     );
 
     errorSpy.mockRestore();
@@ -550,7 +571,7 @@ describe("syncWorker — processNatsSyncMessage handler", () => {
 
     expect(msg.term).toHaveBeenCalledTimes(1);
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Permanent error for xero sync"),
+      expect.stringContaining("Permanent error during accounting sync"),
     );
 
     errorSpy.mockRestore();
@@ -567,7 +588,7 @@ describe("syncWorker — processNatsSyncMessage handler", () => {
 
     expect(msg.term).toHaveBeenCalledTimes(1);
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Permanent error for quickbooks sync"),
+      expect.stringContaining("Permanent error during accounting sync"),
     );
 
     errorSpy.mockRestore();
@@ -610,7 +631,10 @@ describe("syncWorker — NATS consume rejection is caught and logged", () => {
         close: jest.fn().mockResolvedValue(undefined),
       })),
     }));
-    jest.mock("../../src/queue/config", () => ({ queueOptions: {} }));
+    jest.mock("../../src/queue/config", () => ({
+      queueOptions: {},
+      getTelecomProviderLimits: () => ({ concurrency: 3, limiter: { max: 10, duration: 1000 } }),
+    }));
     jest.mock("../../src/queue/syncQueue", () => ({
       SYNC_QUEUE_NAME: "accounting-sync",
     }));
@@ -674,7 +698,10 @@ describe("syncWorker — closeSyncWorker", () => {
       })),
       Worker: jest.fn().mockImplementation(() => ({ close: workerClose })),
     }));
-    jest.mock("../../src/queue/config", () => ({ queueOptions: {} }));
+    jest.mock("../../src/queue/config", () => ({
+      queueOptions: {},
+      getTelecomProviderLimits: () => ({ concurrency: 3, limiter: { max: 10, duration: 1000 } }),
+    }));
     jest.mock("../../src/queue/syncQueue", () => ({
       SYNC_QUEUE_NAME: "accounting-sync",
     }));
@@ -711,7 +738,10 @@ describe("syncWorker — closeSyncWorker", () => {
       })),
       Worker: jest.fn().mockImplementation(() => ({ close: workerClose })),
     }));
-    jest.mock("../../src/queue/config", () => ({ queueOptions: {} }));
+    jest.mock("../../src/queue/config", () => ({
+      queueOptions: {},
+      getTelecomProviderLimits: () => ({ concurrency: 3, limiter: { max: 10, duration: 1000 } }),
+    }));
     jest.mock("../../src/queue/syncQueue", () => ({
       SYNC_QUEUE_NAME: "accounting-sync",
     }));
@@ -767,7 +797,10 @@ describe("syncWorker — NATS disabled branch", () => {
         close: jest.fn().mockResolvedValue(undefined),
       })),
     }));
-    jest.mock("../../src/queue/config", () => ({ queueOptions: {} }));
+    jest.mock("../../src/queue/config", () => ({
+      queueOptions: {},
+      getTelecomProviderLimits: () => ({ concurrency: 3, limiter: { max: 10, duration: 1000 } }),
+    }));
     jest.mock("../../src/queue/syncQueue", () => ({
       SYNC_QUEUE_NAME: "accounting-sync",
     }));

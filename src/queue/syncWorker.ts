@@ -1,6 +1,6 @@
 import logger from "../utils/logger";
 import tracer from "../tracer";
-import { Worker, Job, RateLimitError as BullMQRateLimitError } from "bullmq";
+import { Worker, Job } from "bullmq";
 import { queueOptions, getTelecomProviderLimits } from "./config";
 import { SyncJobData, SyncJobResult, SYNC_QUEUE_NAME } from "./syncQueue";
 import {
@@ -254,7 +254,7 @@ export async function processSyncJob(
       
       // Dynamic Throttling: If external API hits a rate limit, safely delay worker processing natively
       if (error instanceof RateLimitError) {
-        throw new BullMQRateLimitError(5000); // 5 second cool-down period
+        throw Worker.RateLimitError(); // 5 second cool-down period
       }
 
       throw error;

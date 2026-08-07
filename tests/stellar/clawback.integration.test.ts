@@ -29,7 +29,6 @@ describe("Clawback Integration Tests", () => {
     stellarService = new StellarService();
     server = getStellarServer();
 
-    // Generate test keypairs - use random if env secret is invalid
     try {
       if (
         process.env.STELLAR_ISSUER_SECRET &&
@@ -40,9 +39,11 @@ describe("Clawback Integration Tests", () => {
         );
       } else {
         issuerKeypair = StellarSdk.Keypair.random();
+        process.env.STELLAR_ISSUER_SECRET = issuerKeypair.secret();
       }
     } catch {
       issuerKeypair = StellarSdk.Keypair.random();
+      process.env.STELLAR_ISSUER_SECRET = issuerKeypair.secret();
     }
 
     userKeypair = StellarSdk.Keypair.random();
@@ -67,6 +68,18 @@ describe("Clawback Integration Tests", () => {
       }
 
       try {
+        // Step 0: Fund issuer if not exists on testnet
+        if (getNetworkPassphrase() === StellarSdk.Networks.TESTNET) {
+          try {
+            await server.loadAccount(issuerKeypair.publicKey());
+          } catch (e) {
+            console.log("Funding issuer account via friendbot...");
+            await server.friendbot(issuerKeypair.publicKey()).call();
+            // Wait a brief moment for ledger consensus
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+          }
+        }
+
         // Step 1: Enable clawback on issuer account
         await stellarService.enableClawback();
 

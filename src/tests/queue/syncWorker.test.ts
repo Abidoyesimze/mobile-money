@@ -88,13 +88,21 @@ jest.mock("../../queue/nats", () => ({
   natsManager: { consume: jest.fn(), close: jest.fn() },
 }));
 
-jest.mock("bullmq", () => ({
-  Worker: jest.fn(() => ({
+jest.mock("bullmq", () => {
+  const mockWorker = jest.fn(() => ({
     close: jest.fn().mockResolvedValue(undefined),
-  })),
-}));
+  }));
+  (mockWorker as any).RateLimitError = jest.fn(() => new Error("QB rate limited"));
+  return {
+    Worker: mockWorker,
+    Job: jest.fn(),
+  };
+});
 
-jest.mock("../../queue/config", () => ({ queueOptions: {} }));
+jest.mock("../../queue/config", () => ({
+  queueOptions: {},
+  getTelecomProviderLimits: () => ({ concurrency: 3, limiter: { max: 10, duration: 1000 } }),
+}));
 
 jest.mock("../../queue/syncQueue", () => ({
   SYNC_QUEUE_NAME: "accounting-sync",

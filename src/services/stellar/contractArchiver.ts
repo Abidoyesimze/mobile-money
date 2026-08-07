@@ -1,6 +1,6 @@
 import { getStellarServer } from "../../config/stellar";
 import { insertContractStateArchive } from "../../database/contractStateArchiveRepository";
-import EventSource from "eventsource";
+import { EventSource } from "eventsource";
 
 export interface ContractArchiverConfig {
   contractId?: string;

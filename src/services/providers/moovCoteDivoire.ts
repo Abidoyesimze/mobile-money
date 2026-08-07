@@ -139,7 +139,7 @@ export class MoovCoteDivoireProvider extends BaseProvider {
   public async triggerDepositPush(
     phoneNumber: string,
     amount: string | number,
-    requestId = randomUUID(),
+    requestId: string = randomUUID(),
   ): Promise<MoovDepositPushResult> {
     const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
     const numericAmount = Number(amount);

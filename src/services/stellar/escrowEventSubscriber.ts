@@ -1,7 +1,7 @@
 // src/services/stellar/escrowEventSubscriber.ts
 import { getStellarServer } from "../../config/stellar";
 import { insertEscrowEvent } from "../../database/escrowEventRepository";
-import EventSource from "eventsource";
+import { EventSource } from "eventsource";
 
 interface EscrowEventPayload {
   escrowId: string;
