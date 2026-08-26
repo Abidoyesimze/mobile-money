@@ -39,6 +39,7 @@ export interface Transaction {
 }
 
 export interface TransactionListFilters {
+  userId?: string;
   minAmount?: number;
   maxAmount?: number;
   provider?: string;
@@ -180,6 +181,10 @@ export class TransactionModel {
       params.push(value);
       conditions.push(condition.replace("?", `$${params.length}`));
     };
+
+    if (filters.userId) {
+      addCondition("user_id = ?", filters.userId);
+    }
 
     if (startDate) {
       addCondition("created_at >= ?", new Date(`${startDate}T00:00:00.000Z`));
@@ -576,11 +581,30 @@ export class TransactionModel {
     const result = await queryRead(
       `SELECT ${TRANSACTION_SELECT_COLUMNS}
        FROM transactions
-       WHERE reference_number = $1`,
+       WHERE reference_number = $1
+       LIMIT 1`,
       [referenceNumber],
     );
 
     return mapTransactionRow(result.rows[0]);
+  }
+
+  /**
+   * Fast index check for transaction reference existence
+   */
+  async checkReferenceExists(referenceNumber: string): Promise<boolean> {
+    if (!referenceNumber || typeof referenceNumber !== "string") {
+      return false;
+    }
+
+    const result = await queryRead(
+      `SELECT EXISTS (
+         SELECT 1 FROM transactions WHERE reference_number = $1
+       ) AS exists`,
+      [referenceNumber.trim()],
+    );
+
+    return Boolean(result.rows[0]?.exists);
   }
 
   async findByTags(tags: string[]): Promise<Transaction[]> {
