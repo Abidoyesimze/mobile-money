@@ -1,10 +1,7 @@
 import { queryRead, queryWrite } from "../config/database";
 
 export type VaultProofArtifactStatus =
-  | "issued"
-  | "verified"
-  | "review"
-  | "rejected";
+  "issued" | "verified" | "review" | "rejected";
 
 export interface VaultProofArtifact {
   id: string;
@@ -16,10 +13,10 @@ export interface VaultProofArtifact {
   status: VaultProofArtifactStatus;
   commitment: string;
   signature: string;
-  signatureContext: Record<string, any>;
-  proofPayload: Record<string, any>;
+  signatureContext: Record<string, unknown>;
+  proofPayload: Record<string, unknown>;
   complianceScore: number | null;
-  complianceChecks: Array<Record<string, any>>;
+  complianceChecks: Array<Record<string, unknown>>;
   artifactCiphertext: string;
   artifactHash: string;
   providerReference?: string | null;
@@ -41,10 +38,10 @@ export interface CreateVaultProofArtifactInput {
   status: VaultProofArtifactStatus;
   commitment: string;
   signature: string;
-  signatureContext: Record<string, any>;
-  proofPayload: Record<string, any>;
+  signatureContext: Record<string, unknown>;
+  proofPayload: Record<string, unknown>;
   complianceScore: number;
-  complianceChecks: Array<Record<string, any>>;
+  complianceChecks: Array<Record<string, unknown>>;
   artifactCiphertext: string;
   artifactHash: string;
   providerReference?: string;
@@ -57,9 +54,35 @@ export interface CreateVaultProofArtifactInput {
 export interface UpdateVaultProofVerificationInput {
   status: VaultProofArtifactStatus;
   complianceScore: number;
-  complianceChecks: Array<Record<string, any>>;
-  proofPayload?: Record<string, any>;
+  complianceChecks: Array<Record<string, unknown>>;
+  proofPayload?: Record<string, unknown>;
   verifiedAt?: string;
+}
+
+export interface VaultProofArtifactRow {
+  id: string;
+  vaultId: string;
+  userId: string;
+  applicantId: string;
+  proofType: string;
+  proofVersion: string;
+  status: VaultProofArtifactStatus | string;
+  commitment: string;
+  signature: string;
+  signatureContext: Record<string, unknown> | null;
+  proofPayload: Record<string, unknown> | null;
+  complianceScore: number | null;
+  complianceChecks: Array<Record<string, unknown>> | null;
+  artifactCiphertext: string;
+  artifactHash: string;
+  providerReference?: string | null;
+  documentHash: string;
+  documentFilename?: string | null;
+  documentMimeType?: string | null;
+  issuedAt: Date | string;
+  verifiedAt?: Date | string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
 }
 
 const SELECT_COLUMNS = `
@@ -92,7 +115,7 @@ export class VaultProofArtifactModel {
   async create(
     input: CreateVaultProofArtifactInput,
   ): Promise<VaultProofArtifact> {
-    const result = await queryWrite(
+    const result = await queryWrite<VaultProofArtifactRow>(
       `INSERT INTO vault_proof_artifacts (
         vault_id,
         user_id,
@@ -140,7 +163,9 @@ export class VaultProofArtifactModel {
       ],
     );
 
-    return result.rows[0];
+    return result.rows.length > 0
+      ? mapVaultProofArtifactRow(result.rows[0])
+      : (null as VaultProofArtifact | null);
   }
 
   async findById(
@@ -148,14 +173,14 @@ export class VaultProofArtifactModel {
     userId?: string,
   ): Promise<VaultProofArtifact | null> {
     const clauses = ["id = $1"];
-    const params: any[] = [id];
+    const params: unknown[] = [id];
 
     if (userId) {
       clauses.push(`user_id = $${params.length + 1}`);
       params.push(userId);
     }
 
-    const result = await queryRead(
+    const result = await queryRead<VaultProofArtifactRow>(
       `SELECT ${SELECT_COLUMNS}
        FROM vault_proof_artifacts
        WHERE ${clauses.join(" AND ")}
@@ -163,7 +188,9 @@ export class VaultProofArtifactModel {
       params,
     );
 
-    return result.rows[0] || null;
+    return result.rows.length > 0
+      ? mapVaultProofArtifactRow(result.rows[0])
+      : null;
   }
 
   async findLatestByApplicant(
@@ -171,14 +198,14 @@ export class VaultProofArtifactModel {
     userId?: string,
   ): Promise<VaultProofArtifact | null> {
     const clauses = ["applicant_id = $1"];
-    const params: any[] = [applicantId];
+    const params: unknown[] = [applicantId];
 
     if (userId) {
       clauses.push(`user_id = $${params.length + 1}`);
       params.push(userId);
     }
 
-    const result = await queryRead(
+    const result = await queryRead<VaultProofArtifactRow>(
       `SELECT ${SELECT_COLUMNS}
        FROM vault_proof_artifacts
        WHERE ${clauses.join(" AND ")}
@@ -187,7 +214,9 @@ export class VaultProofArtifactModel {
       params,
     );
 
-    return result.rows[0] || null;
+    return result.rows.length > 0
+      ? mapVaultProofArtifactRow(result.rows[0])
+      : null;
   }
 
   async updateVerification(
@@ -195,7 +224,7 @@ export class VaultProofArtifactModel {
     userId: string,
     input: UpdateVaultProofVerificationInput,
   ): Promise<VaultProofArtifact | null> {
-    const result = await queryWrite(
+    const result = await queryWrite<VaultProofArtifactRow>(
       `UPDATE vault_proof_artifacts
        SET status = $1,
            compliance_score = $2,
@@ -216,8 +245,40 @@ export class VaultProofArtifactModel {
       ],
     );
 
-    return result.rows[0] || null;
+    return result.rows.length > 0
+      ? mapVaultProofArtifactRow(result.rows[0])
+      : null;
   }
+}
+
+function mapVaultProofArtifactRow(
+  row: VaultProofArtifactRow,
+): VaultProofArtifact {
+  return {
+    id: row.id,
+    vaultId: row.vaultId,
+    userId: row.userId,
+    applicantId: row.applicantId,
+    proofType: row.proofType,
+    proofVersion: row.proofVersion,
+    status: row.status as VaultProofArtifactStatus,
+    commitment: row.commitment,
+    signature: row.signature,
+    signatureContext: row.signatureContext ?? {},
+    proofPayload: row.proofPayload ?? {},
+    complianceScore: row.complianceScore ?? null,
+    complianceChecks: row.complianceChecks ?? [],
+    artifactCiphertext: row.artifactCiphertext,
+    artifactHash: row.artifactHash,
+    providerReference: row.providerReference ?? null,
+    documentHash: row.documentHash,
+    documentFilename: row.documentFilename ?? null,
+    documentMimeType: row.documentMimeType ?? null,
+    issuedAt: new Date(row.issuedAt),
+    verifiedAt: row.verifiedAt ? new Date(row.verifiedAt) : null,
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
 }
 
 export default VaultProofArtifactModel;

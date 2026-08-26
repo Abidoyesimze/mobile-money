@@ -24,9 +24,34 @@ export interface ReconciliationReport {
   reportDate: Date;
   fileName: string;
   status: ReconciliationStatus;
-  summary: any;
+  summary: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface ReconciliationReportRow {
+  id: string;
+  provider: string;
+  report_date: Date | string;
+  file_name: string | null;
+  status: ReconciliationStatus | string;
+  summary: Record<string, unknown> | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface ReconciliationDiscrepancyRow {
+  id: string;
+  report_id: string;
+  transaction_id?: string | null;
+  reference_number: string;
+  type: DiscrepancyType | string;
+  expected_value: string | null;
+  actual_value: string | null;
+  review_status: ReviewStatus | string;
+  resolution_notes?: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
 }
 
 export interface ReconciliationDiscrepancy {
@@ -49,9 +74,9 @@ export class ReconciliationModel {
     reportDate: Date;
     fileName?: string;
     status?: ReconciliationStatus;
-    summary?: any;
+    summary?: Record<string, unknown>;
   }): Promise<ReconciliationReport> {
-    const res = await queryWrite(
+    const res = await queryWrite<ReconciliationReportRow>(
       `INSERT INTO reconciliation_reports (provider, report_date, file_name, status, summary)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
@@ -71,7 +96,7 @@ export class ReconciliationModel {
     data: Partial<ReconciliationReport>,
   ): Promise<void> {
     const fields: string[] = [];
-    const params: any[] = [id];
+    const params: unknown[] = [id];
     let i = 2;
 
     if (data.status) {
@@ -103,7 +128,7 @@ export class ReconciliationModel {
     expectedValue?: string;
     actualValue?: string;
   }): Promise<ReconciliationDiscrepancy> {
-    const res = await queryWrite(
+    const res = await queryWrite<ReconciliationDiscrepancyRow>(
       `INSERT INTO reconciliation_discrepancies (report_id, transaction_id, reference_number, type, expected_value, actual_value)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
@@ -120,7 +145,7 @@ export class ReconciliationModel {
   }
 
   async getReports(limit = 10, offset = 0): Promise<ReconciliationReport[]> {
-    const res = await queryRead(
+    const res = await queryRead<ReconciliationReportRow>(
       `SELECT * FROM reconciliation_reports ORDER BY report_date DESC, created_at DESC LIMIT $1 OFFSET $2`,
       [limit, offset],
     );
@@ -128,7 +153,7 @@ export class ReconciliationModel {
   }
 
   async getReportById(id: string): Promise<ReconciliationReport | null> {
-    const res = await queryRead(
+    const res = await queryRead<ReconciliationReportRow>(
       `SELECT * FROM reconciliation_reports WHERE id = $1`,
       [id],
     );
@@ -138,7 +163,7 @@ export class ReconciliationModel {
   async getDiscrepanciesByReportId(
     reportId: string,
   ): Promise<ReconciliationDiscrepancy[]> {
-    const res = await queryRead(
+    const res = await queryRead<ReconciliationDiscrepancyRow>(
       `SELECT * FROM reconciliation_discrepancies WHERE report_id = $1 ORDER BY created_at ASC`,
       [reportId],
     );
@@ -154,30 +179,32 @@ export class ReconciliationModel {
     );
   }
 
-  private mapReportRow(row: any): ReconciliationReport {
+  private mapReportRow(row: ReconciliationReportRow): ReconciliationReport {
     return {
       id: row.id,
       provider: row.provider,
       reportDate: new Date(row.report_date),
-      fileName: row.file_name,
-      status: row.status,
-      summary: row.summary,
+      fileName: row.file_name ?? "",
+      status: row.status as ReconciliationStatus,
+      summary: row.summary ?? {},
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
     };
   }
 
-  private mapDiscrepancyRow(row: any): ReconciliationDiscrepancy {
+  private mapDiscrepancyRow(
+    row: ReconciliationDiscrepancyRow,
+  ): ReconciliationDiscrepancy {
     return {
       id: row.id,
       reportId: row.report_id,
-      transactionId: row.transaction_id,
+      transactionId: row.transaction_id ?? undefined,
       referenceNumber: row.reference_number,
-      type: row.type,
-      expectedValue: row.expected_value,
-      actualValue: row.actual_value,
-      reviewStatus: row.review_status,
-      resolutionNotes: row.resolution_notes,
+      type: row.type as DiscrepancyType,
+      expectedValue: row.expected_value ?? "",
+      actualValue: row.actual_value ?? "",
+      reviewStatus: row.review_status as ReviewStatus,
+      resolutionNotes: row.resolution_notes ?? undefined,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
     };

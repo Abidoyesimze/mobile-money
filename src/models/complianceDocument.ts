@@ -77,6 +77,32 @@ const selectFields = `
   updated_at AS "updatedAt"
 `;
 
+/**
+ * Row shape returned by selectFields queries (aliased to camelCase).
+ * The mapRow fallbacks also accept raw snake_case rows from `SELECT *`.
+ */
+export interface ComplianceDocumentRow {
+  id: string;
+  title: string;
+  summary?: string | null;
+  body: string;
+  countryCode?: string | null;
+  country_code?: string | null;
+  provider?: string | null;
+  tags?: string[] | null;
+  sourceUrl?: string | null;
+  source_url?: string | null;
+  status: ComplianceDocumentStatus | string;
+  createdBy?: string | null;
+  created_by?: string | null;
+  updatedBy?: string | null;
+  updated_by?: string | null;
+  createdAt?: Date | string;
+  created_at?: Date | string;
+  updatedAt?: Date | string;
+  updated_at?: Date | string;
+}
+
 export class ComplianceDocumentModel {
   async create(
     input: ComplianceDocumentCreateInput,
@@ -90,7 +116,7 @@ export class ComplianceDocumentModel {
       RETURNING ${selectFields}
     `;
 
-    const result = await pool.query(query, [
+    const result = await pool.query<ComplianceDocumentRow>(query, [
       input.title,
       input.summary ?? null,
       input.body,
@@ -109,7 +135,7 @@ export class ComplianceDocumentModel {
     filter: ComplianceDocumentFilter = {},
   ): Promise<ComplianceDocumentListResult> {
     const conditions: string[] = [];
-    const params: any[] = [];
+    const params: unknown[] = [];
     let paramIndex = 1;
 
     if (filter.status) {
@@ -148,7 +174,7 @@ export class ComplianceDocumentModel {
 
     const whereClause =
       conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    const countResult = await pool.query(
+    const countResult = await pool.query<{ count: string }>(
       `SELECT COUNT(*) AS count FROM compliance_documents ${whereClause}`,
       params,
     );
@@ -156,7 +182,7 @@ export class ComplianceDocumentModel {
     const limit = filter.limit ?? 25;
     const offset = filter.offset ?? 0;
 
-    const listResult = await pool.query(
+    const listResult = await pool.query<ComplianceDocumentRow>(
       `
         SELECT ${selectFields}
         FROM compliance_documents
@@ -174,7 +200,7 @@ export class ComplianceDocumentModel {
   }
 
   async findById(id: string): Promise<ComplianceDocument | null> {
-    const result = await pool.query(
+    const result = await pool.query<ComplianceDocumentRow>(
       `
         SELECT ${selectFields}
         FROM compliance_documents
@@ -192,7 +218,7 @@ export class ComplianceDocumentModel {
     actorUserId?: string,
   ): Promise<ComplianceDocument | null> {
     const fields: string[] = [];
-    const params: any[] = [];
+    const params: unknown[] = [];
     let paramIndex = 1;
 
     const addField = (column: string, value: unknown) => {
@@ -222,7 +248,7 @@ export class ComplianceDocumentModel {
     params.push(actorUserId ?? null);
     params.push(id);
 
-    const result = await pool.query(
+    const result = await pool.query<ComplianceDocumentRow>(
       `
         UPDATE compliance_documents
         SET ${fields.join(", ")}
@@ -239,7 +265,7 @@ export class ComplianceDocumentModel {
     id: string,
     actorUserId?: string,
   ): Promise<ComplianceDocument | null> {
-    const result = await pool.query(
+    const result = await pool.query<ComplianceDocumentRow>(
       `
         UPDATE compliance_documents
         SET status = 'archived', updated_at = CURRENT_TIMESTAMP, updated_by = $1
@@ -253,7 +279,11 @@ export class ComplianceDocumentModel {
   }
 
   async getFacets(): Promise<ComplianceDocumentFacets> {
-    const result = await pool.query(`
+    const result = await pool.query<{
+      countries: string[];
+      providers: string[];
+      tags: string[];
+    }>(`
       SELECT
         ARRAY(
           SELECT DISTINCT country_code
@@ -282,21 +312,21 @@ export class ComplianceDocumentModel {
     };
   }
 
-  private mapRow(row: any): ComplianceDocument {
+  private mapRow(row: ComplianceDocumentRow): ComplianceDocument {
     return {
       id: row.id,
       title: row.title,
-      summary: row.summary,
+      summary: row.summary ?? null,
       body: row.body,
       countryCode: row.countryCode ?? row.country_code ?? null,
-      provider: row.provider,
+      provider: row.provider ?? null,
       tags: row.tags ?? [],
       sourceUrl: row.sourceUrl ?? row.source_url ?? null,
-      status: row.status,
+      status: row.status as ComplianceDocumentStatus,
       createdBy: row.createdBy ?? row.created_by ?? null,
       updatedBy: row.updatedBy ?? row.updated_by ?? null,
-      createdAt: row.createdAt ?? row.created_at,
-      updatedAt: row.updatedAt ?? row.updated_at,
+      createdAt: row.createdAt ?? row.created_at ?? "",
+      updatedAt: row.updatedAt ?? row.updated_at ?? "",
     };
   }
 }

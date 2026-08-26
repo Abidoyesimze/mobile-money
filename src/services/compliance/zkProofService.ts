@@ -156,10 +156,15 @@ export class ZkProofService {
       status: "issued",
       commitment: commitment.hex,
       signature,
-      signatureContext,
-      proofPayload,
+      signatureContext: signatureContext as unknown as Record<
+        string,
+        unknown
+      >,
+      proofPayload: proofPayload as unknown as Record<string, unknown>,
       complianceScore,
-      complianceChecks,
+      complianceChecks: complianceChecks as unknown as Array<
+        Record<string, unknown>
+      >,
       artifactCiphertext,
       artifactHash,
       providerReference,
@@ -194,7 +199,8 @@ export class ZkProofService {
     }
 
     const proofPayload = proof.proofPayload || {};
-    const signatureContext = proof.signatureContext as CommitmentSignatureContext;
+    const signatureContext =
+      proof.signatureContext as unknown as CommitmentSignatureContext;
     const authorityPublicKey = this.getAuthorityPublicKey();
     const signatureValid = verifyCommitmentEnvelopeSignature(
       authorityPublicKey,
@@ -228,7 +234,9 @@ export class ZkProofService {
     const updated = await this.proofModel.updateVerification(proof.id, userId, {
       status,
       complianceScore,
-      complianceChecks,
+      complianceChecks: complianceChecks as unknown as Array<
+        Record<string, unknown>
+      >,
       verifiedAt,
       proofPayload: {
         last_verification: {
@@ -468,7 +476,8 @@ export class ZkProofService {
       proofVersion: proof.proofVersion,
       status: proof.status,
       complianceScore: proof.complianceScore ?? 0,
-      complianceChecks: (proof.complianceChecks || []) as ComplianceCheckResult[],
+      complianceChecks: (proof.complianceChecks ||
+        []) as unknown as ComplianceCheckResult[],
       providerReference: proof.providerReference ?? null,
       issuedAt:
         proof.issuedAt instanceof Date

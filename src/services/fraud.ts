@@ -501,8 +501,12 @@ export class FraudService {
         (t) => t.locationMetadata && t.locationMetadata.status === "resolved",
       );
       if (lastTxnWithLocation && lastTxnWithLocation.locationMetadata) {
+        const previousLocation = lastTxnWithLocation.locationMetadata as {
+          country: string;
+          city: string;
+        };
         const distance = this.calculateDistance(
-          lastTxnWithLocation.locationMetadata,
+          previousLocation,
           transactionInput.location,
         );
         const timeDiff =

@@ -26,7 +26,7 @@ export const processPayment = [
         phoneNumber,
         provider,
         status: "completed",
-        idempotencyKey: req.headers["idempotency-key"],
+        idempotencyKey: String(req.headers["idempotency-key"] ?? ""),
         providerReference: externalTransactionId,
       };
 
