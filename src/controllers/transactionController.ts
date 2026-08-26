@@ -5,10 +5,12 @@ import { StellarService } from "../services/stellar/stellarService";
 import { MobileMoneyService } from "../services/mobilemoney/mobileMoneyService";
 import { maskPhoneNumber } from "../utils/masking";
 import { validatePhoneProviderMatch } from "../utils/phoneUtils";
+import { VALID_STATUSES } from "../utils/transactionFilters";
 import {
   Transaction,
   TransactionModel,
   TransactionStatus,
+  TransactionListFilters,
 } from "../models/transaction";
 import { lockManager, LockKeys } from "../utils/lock";
 import {
@@ -324,7 +326,8 @@ async function applyPreDispatchAMLProfile(
       status: transaction.status,
       currency: transaction.currency,
       originalAmount:
-        transaction.originalAmount !== undefined && transaction.originalAmount !== null
+        transaction.originalAmount !== undefined &&
+        transaction.originalAmount !== null
           ? Number(transaction.originalAmount)
           : Number(transaction.amount),
       convertedAmount:
@@ -388,7 +391,8 @@ async function monitorTransactionForAML(
       status: transaction.status,
       currency: transaction.currency,
       originalAmount:
-        transaction.originalAmount !== undefined && transaction.originalAmount !== null
+        transaction.originalAmount !== undefined &&
+        transaction.originalAmount !== null
           ? Number(transaction.originalAmount)
           : Number(transaction.amount),
       convertedAmount:
@@ -1180,27 +1184,34 @@ export const listTransactionsHandler = async (req: Request, res: Response) => {
       offset: 0,
     };
 
-    const totalCount = await transactionModel.countByStatuses(filters.statuses);
-    const transactions = await transactionModel.findByStatuses(
-      filters.statuses,
-      filters.limit,
-      filters.offset,
-    );
-    const results = await transactionModel.list(
-      filters.limit,
-      filters.offset,
-      undefined,
-      undefined,
-      {
-        tags: [], // Could be extended
+    let results: any[];
+    let total: number;
+
+    if (filters.reference) {
+      const listFilters: TransactionListFilters = {
+        statuses: filters.statuses?.length ? filters.statuses : undefined,
         referenceNumber: filters.reference,
-      },
-    );
-    const total = filters.reference
-      ? await transactionModel.count(undefined, undefined, {
-          referenceNumber: filters.reference,
-        })
-      : totalCount;
+      };
+      [results, total] = await Promise.all([
+        transactionModel.list(
+          filters.limit,
+          filters.offset,
+          filters.startDate,
+          filters.endDate,
+          listFilters,
+        ),
+        transactionModel.count(filters.startDate, filters.endDate, listFilters),
+      ]);
+    } else {
+      [results, total] = await Promise.all([
+        transactionModel.findByStatuses(
+          filters.statuses,
+          filters.limit,
+          filters.offset,
+        ),
+        transactionModel.countByStatuses(filters.statuses),
+      ]);
+    }
 
     return res.json({
       data: results,
@@ -1214,9 +1225,7 @@ export const listTransactionsHandler = async (req: Request, res: Response) => {
       },
       filters: {
         statuses:
-          filters.statuses.length === 0
-            ? Object.values(TransactionStatus)
-            : filters.statuses,
+          filters.statuses.length === 0 ? VALID_STATUSES : filters.statuses,
       },
     });
   } catch (err) {

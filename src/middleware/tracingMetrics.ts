@@ -42,7 +42,9 @@ function buildMetrics(reg: Registry = defaultRegister) {
     });
 
   const httpRequestDuration =
-    (reg.getSingleMetric("http_request_duration_red_seconds") as Histogram<string>) ||
+    (reg.getSingleMetric(
+      "http_request_duration_red_seconds",
+    ) as Histogram<string>) ||
     new Histogram({
       name: "http_request_duration_red_seconds",
       help: "RED: HTTP request duration with exemplars",
@@ -77,14 +79,16 @@ export function tracingMetricsMiddleware(
   const start = process.hrtime.bigint();
 
   res.on("finish", () => {
-    const durationSeconds =
-      Number(process.hrtime.bigint() - start) / 1e9;
+    const durationSeconds = Number(process.hrtime.bigint() - start) / 1e9;
 
     // Normalise route: prefer Express route pattern, fall back to raw path
-    const route = (req.route?.path as string | undefined) ?? req.path ?? "unknown";
+    const route =
+      (req.route?.path as string | undefined) ?? req.path ?? "unknown";
     const method = req.method;
     const statusCode = String(res.statusCode);
-    const { trace_id, span_id } = getTraceIds();
+    const { trace_id, span_id } = (typeof getTraceIds === "function"
+      ? getTraceIds()
+      : null) ?? { trace_id: "", span_id: "" };
 
     const labels = { method, route, status_code: statusCode };
     const { httpRequestsTotal, httpRequestErrorsTotal, httpRequestDuration } =
