@@ -8,6 +8,8 @@
     "prepare": "husky",
     "audit:high": "npm audit --audit-level=high",
     "snyk:test:high": "snyk test --severity-threshold=high",
+    "security:scan": "tsx scripts/security-scan.ts",
+    "security:check": "npm run audit:high && tsx scripts/security-scan.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "dev": "tsx watch src/index.ts",
