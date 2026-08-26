@@ -1,6 +1,10 @@
-import { Message as AmqpMessage } from "amqplib";
-import { TransactionJobData, TransactionJobResult } from "./transactionQueue";
-import { rabbitMQManager, EXCHANGES, ROUTING_KEYS, QUEUES } from "./rabbitmq";
+import { Worker } from "bullmq";
+import {
+  TransactionJobData,
+  TransactionJobResult,
+  TRANSACTION_QUEUE_NAME,
+} from "./transactionQueue";
+import { rabbitMQManager, EXCHANGES, ROUTING_KEYS } from "./rabbitmq";
 import {
   natsManager,
   NATS_QUEUE_ENABLED,
@@ -25,7 +29,7 @@ import { queryRead, queryWrite } from "../config/database";
 import subscriptionModel from "../models/subscription";
 import logger from "../utils/logger";
 
-import { getWorkerConcurrency } from "./config";
+import { queueOptions, getWorkerConcurrency } from "./config";
 
 const transactionModel = new TransactionModel();
 const mobileMoneyService = new MobileMoneyService();
@@ -599,10 +603,10 @@ async function processTransaction(
     // If this transaction was created by a subscription, record attempt and schedule retry if configured
     try {
       const tx = await transactionModel.findById(transactionId);
-      const subscriptionId =
-        (tx?.metadata &&
-          (tx.metadata.subscription_id || tx.metadata.subscriptionId)) ||
-        null;
+      const subscriptionId = (tx?.metadata &&
+        ((tx.metadata.subscription_id as string | undefined) ||
+          (tx.metadata.subscriptionId as string | undefined))) as
+        string | null | undefined;
       if (subscriptionId) {
         await handleSubscriptionFailure(
           subscriptionId,
@@ -615,20 +619,22 @@ async function processTransaction(
       log.error({ subErr }, "Failed to record subscription retry info");
     }
 
-    // TODO: commented out because I couldn't find the job variable so to clear `rebase/merge` error
-    // if (job) {
-    //   capturePersistentFailure(job).catch(err => logger.error('[DLQ] Error capturing failure:', err));
-    // }
+    // TODO: capture the BullMQ job so permanently-failed jobs can be routed
+    // to the DLQ from the worker 'failed' event listener.
+
+    // BullMQ completes the job with a failure result; the broker-level
+    // `attempts` is left at 1 because retrying the whole job from scratch
+    // could double-send a payment (in-process retries handle transient
+    // failures via `withRetry`).
+    return {
+      success: false,
+      transactionId,
+      error: getErrorMessage(error),
+    };
   }
-  // );
-
-  // throw error;
 }
-// }
 
-// Start consuming
-const consumerLabel = NATS_QUEUE_ENABLED ? "NATS JetStream" : "RabbitMQ";
-
+// Start consuming: NATS JetStream when enabled, otherwise a BullMQ Worker.
 if (NATS_QUEUE_ENABLED) {
   natsManager
     .consume<TransactionJobData>(
@@ -641,26 +647,27 @@ if (NATS_QUEUE_ENABLED) {
       CONCURRENCY,
     )
     .catch((err) => logger.error({ err }, "NATS JetStream Consumer error"));
-} else {
-  rabbitMQManager
-    .consume<TransactionJobData>(
-      QUEUES.TRANSACTION_PROCESSING,
-      async (data) => {
-        await processTransaction(data);
-      },
-      CONCURRENCY,
-    )
-    .catch((err) => logger.error({ err }, "RabbitMQ Consumer error"));
 }
 
-export const transactionWorker = {
-  close: async () => {
-    if (NATS_QUEUE_ENABLED) {
-      await natsManager.close();
+export const transactionWorker:
+  | Worker<TransactionJobData, TransactionJobResult>
+  | {
+      close: () => Promise<void>;
+    } = NATS_QUEUE_ENABLED
+  ? {
+      close: async () => {
+        await natsManager.close();
+      },
     }
-  },
-};
+  : new Worker<TransactionJobData, TransactionJobResult>(
+      TRANSACTION_QUEUE_NAME,
+      async (job) => processTransaction(job.data),
+      { ...queueOptions, concurrency: CONCURRENCY },
+    );
 
-export async function closeWorker() {
+export async function closeWorker(): Promise<void> {
   await transactionWorker.close();
+  if (NATS_QUEUE_ENABLED) {
+    await natsManager.close();
+  }
 }

@@ -44,7 +44,7 @@ const selectFields = `
 
 export class AuditLogModel {
   async create(input: CreateAuditLogInput): Promise<AuditLog> {
-    const result = await pool.query(
+    const result = await pool.query<AuditLog>(
       `
         INSERT INTO audit_logs (
           admin_id,
@@ -73,7 +73,7 @@ export class AuditLogModel {
   }
 
   async findById(id: string): Promise<AuditLog | null> {
-    const result = await pool.query(
+    const result = await pool.query<AuditLog>(
       `
         SELECT ${selectFields}
         FROM audit_logs
@@ -112,7 +112,7 @@ export class AuditLogModel {
     params.push(filter.offset ?? 0);
     const offsetParameter = params.length;
 
-    const result = await pool.query(
+    const result = await pool.query<AuditLog>(
       `
         SELECT ${selectFields}
         FROM audit_logs

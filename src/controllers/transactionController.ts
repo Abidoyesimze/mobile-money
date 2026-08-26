@@ -776,7 +776,10 @@ async function processTransactionRequest(
               idempotencyExpiresAt: idempotencyKey
                 ? buildIdempotencyExpiry()
                 : null,
-              locationMetadata: req.geoLocation ?? null,
+              locationMetadata: (req.geoLocation as
+                | Record<string, unknown>
+                | null
+                | undefined) ?? null,
             });
 
             await applyPreDispatchAMLProfile(transaction);

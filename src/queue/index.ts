@@ -1,4 +1,3 @@
-import { rabbitMQManager } from "./rabbitmq";
 import { transactionQueue } from "./transactionQueue";
 import { transactionWorker, closeWorker } from "./worker";
 import { syncQueue } from "./syncQueue";
