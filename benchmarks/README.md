@@ -1,4 +1,46 @@
-# Soroban Gas Consumption Benchmark CLI Tool
+# Benchmarks
+
+This directory contains performance and load testing tools for the Mobile Money bridge.
+
+## k6 Ingest Load Testing
+
+The k6 suite benchmarks high-throughput callback ingestion services (`ingest-node` on `:3001`, `ingest-go` on `:3002`).
+
+### Prerequisites
+
+- [k6](https://k6.io/docs/getting-started/installation/) installed
+- Ingest service running locally
+- Redis on `:6379`
+
+### Scenarios
+
+| Script | Purpose |
+| ------ | ------- |
+| `k6-bench.js` | Baseline constant-arrival-rate throughput (1k/5k/10k RPS) |
+| `scenarios/smoke.js` | Quick 5-VU sanity check before full runs |
+| `scenarios/peak-day-spike.js` | 30-min realistic peak-day traffic curve |
+| `scenarios/stress.js` | Breaking-point ramp beyond peak load |
+
+### Usage
+
+```bash
+# Run the full baseline suite
+./benchmarks/run-bench.sh
+
+# Run individual scenarios
+./benchmarks/run-bench.sh --scenario smoke
+./benchmarks/run-bench.sh --scenario peak-day
+./benchmarks/run-bench.sh --scenario stress
+
+# Direct k6 invocation
+k6 run -e TARGET_URL=http://localhost:3001 benchmarks/scenarios/smoke.js
+```
+
+Results are written to `benchmarks/results/` (JSON exports are gitignored).
+
+---
+
+## Soroban Gas Consumption Benchmark CLI Tool
 
 Automates gas measurement of Soroban smart contract deployments and method invocations.
 Outputs clean gas figures as formatted terminal tables, JSON, and Markdown reports.

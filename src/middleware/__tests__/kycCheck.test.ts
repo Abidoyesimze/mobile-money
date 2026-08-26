@@ -165,4 +165,81 @@ describe("kycCheck middleware", () => {
 
     expect(next).toHaveBeenCalledWith(error);
   });
+
+  it("returns 401 when no authenticated or requested user is present", async () => {
+    req.body = { amount: 5000 };
+    delete req.jwtUser;
+
+    await middleware(req as Request, res as Response, next);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "UNAUTHORIZED",
+        message: expect.stringContaining("Authentication is required"),
+      }),
+    );
+    expect(checkTransactionLimit).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when amount is missing or invalid", async () => {
+    req.body = { userId: "user-1", amount: "not-a-number" };
+
+    await middleware(req as Request, res as Response, next);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "INVALID_AMOUNT",
+        message: expect.stringContaining("positive number"),
+      }),
+    );
+    expect(checkTransactionLimit).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when the user has a zero daily limit", async () => {
+    checkTransactionLimit.mockResolvedValue({
+      allowed: false,
+      kycLevel: kycLevels.unverified,
+      dailyLimit: 0,
+      currentDailyTotal: 0,
+      remainingLimit: 0,
+      message: "Transactions are disabled for this account.",
+      upgradeAvailable: true,
+    });
+
+    await middleware(req as Request, res as Response, next);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "TRANSACTION_LIMIT_EXCEEDED",
+        details: expect.objectContaining({
+          dailyLimit: 0,
+        }),
+      }),
+    );
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("allows requests using only jwtUser when body userId is omitted", async () => {
+    req.body = { amount: 2500 };
+    delete req.jwtUser;
+    req.jwtUser = { userId: "user-1" };
+
+    checkTransactionLimit.mockResolvedValue({
+      allowed: true,
+      kycLevel: kycLevels.basic,
+      dailyLimit: 100000,
+      currentDailyTotal: 1000,
+      remainingLimit: 99000,
+    });
+
+    await middleware(req as Request, res as Response, next);
+
+    expect(checkTransactionLimit).toHaveBeenCalledWith("user-1", 2500);
+    expect(next).toHaveBeenCalledTimes(1);
+  });
 });

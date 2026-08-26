@@ -3,11 +3,17 @@ import { Server } from "http";
 import { Request, Response } from "express";
 import express = require("express");
 import mockServerConfig from "../src/config/mockServer";
+import {
+  buildMoovSoapResponse,
+  generateMoovTestKeyPair,
+  getMoovRestStatus,
+  getMoovSoapStatus,
+} from "../src/mocks/helpers/moov";
 
 type MockScenario = "success" | "failed" | "pending";
 
 interface StoredTransaction {
-  provider: "mtn" | "airtel" | "vodacom" | "tigo";
+  provider: "mtn" | "airtel" | "vodacom" | "tigo" | "moov";
   scenario: MockScenario;
   createdAt: string;
 }
@@ -188,10 +194,12 @@ export function createProviderMockApp() {
 
   app.use(express.json());
 
+  const moovTestKeys = generateMoovTestKeyPair();
+
   app.get("/health", (_req: Request, res: Response) => {
     res.json({
       status: "ok",
-      providers: ["mtn", "airtel", "vodacom", "tigo"],
+      providers: ["mtn", "airtel", "vodacom", "tigo", "moov"],
     });
   });
 
@@ -702,6 +710,98 @@ export function createProviderMockApp() {
     });
   });
 
+  // ─── Moov Mock Endpoints ───────────────────────────────────────────────────
+
+  app.post("/moov/oauth/token", async (req: Request, res: Response) => {
+    await applyDelay(req);
+    res.json({
+      access_token: "mock-moov-access-token",
+      token_type: "Bearer",
+      expires_in: 3600,
+    });
+  });
+
+  app.post(
+    "/moov/payments/deposit",
+    async (req: Request<unknown, unknown, MockRequestBody>, res: Response) => {
+      await applyDelay(req);
+      const scenario = getScenario(req);
+      const referenceId = getReferenceId(req, "moov-deposit");
+
+      transactions.set(referenceId, {
+        provider: "moov",
+        scenario,
+        createdAt: new Date().toISOString(),
+      });
+
+      if (scenario === "failed") {
+        return res.status(400).json({
+          status: "FAILED",
+          referenceId,
+          transactionId: `moov-txn-${referenceId}`,
+          message: "Mock Moov deposit failure",
+        });
+      }
+
+      return res.status(200).json({
+        status: getMoovRestStatus(scenario),
+        referenceId,
+        transactionId: `moov-txn-${referenceId}`,
+        message: "Mock Moov deposit accepted",
+      });
+    },
+  );
+
+  app.get(
+    "/moov/payments/:referenceId",
+    async (
+      req: Request<{ referenceId: string }, unknown, MockRequestBody>,
+      res: Response,
+    ) => {
+      await applyDelay(req);
+      const stored = transactions.get(req.params.referenceId);
+      const scenario = stored?.scenario || getScenario(req);
+
+      return res.json({
+        referenceId: req.params.referenceId,
+        transactionId: `moov-txn-${req.params.referenceId}`,
+        status: getMoovRestStatus(scenario),
+      });
+    },
+  );
+
+  app.post(
+    "/moov/soap",
+    async (req: Request<unknown, unknown, MockRequestBody>, res: Response) => {
+      await applyDelay(req);
+      const scenario = getScenario(req);
+      const soapAction = String(req.header("SOAPAction") || "").toLowerCase();
+      const referenceId = getReferenceId(req, "moov-soap");
+      const status = getMoovSoapStatus(scenario);
+
+      transactions.set(referenceId, {
+        provider: "moov",
+        scenario,
+        createdAt: new Date().toISOString(),
+      });
+
+      let bodyContent = "";
+      if (soapAction.includes("requestpayment")) {
+        bodyContent = `<RequestPaymentResponse><Status>${status}</Status><TransactionId>moov-txn-${referenceId}</TransactionId></RequestPaymentResponse>`;
+      } else if (soapAction.includes("sendpayout")) {
+        bodyContent = `<SendPayoutResponse><Status>${status}</Status><TransactionId>moov-txn-${referenceId}</TransactionId></SendPayoutResponse>`;
+      } else if (soapAction.includes("gettransactionstatus")) {
+        bodyContent = `<GetTransactionStatusResponse><Status>${status}</Status><TransactionId>moov-txn-${referenceId}</TransactionId></GetTransactionStatusResponse>`;
+      } else {
+        bodyContent = `<MoovResponse><Status>${status}</Status><TransactionId>moov-txn-${referenceId}</TransactionId></MoovResponse>`;
+      }
+
+      res.type("text/xml").send(
+        buildMoovSoapResponse(bodyContent, moovTestKeys.privateKey),
+      );
+    },
+  );
+
   return app;
 }
 
@@ -726,7 +826,7 @@ export function startProviderMockServer(port = DEFAULT_PORT): Server {
 
   return app.listen(port, () => {
     console.info(
-      `[provider-mock] listening on port ${port} for MTN and Airtel mock traffic`,
+      `[provider-mock] listening on port ${port} for MTN, Airtel, and Moov mock traffic`,
     );
   });
 }
