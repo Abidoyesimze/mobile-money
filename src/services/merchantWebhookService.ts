@@ -6,6 +6,7 @@ import {
 } from "../models/merchantWebhook";
 import { SAMPLE_WEBHOOK_PAYLOAD } from "../routes/webhooks";
 import { WebhookCacheInvalidation } from "./cacheAside";
+import { signWebhookPayload } from "../crypto/webhookSigning";
 
 const model = new MerchantWebhookModel();
 
@@ -20,10 +21,17 @@ interface DeliveryResult {
 }
 
 /**
- * Sign a payload with HMAC-SHA256 — same scheme as the existing WebhookService.
+ * Sign a payload for delivery. Uses Ed25519 (`ed25519=<hex>`) when
+ * `WEBHOOK_ED25519_SIGNING_KEY` is configured, otherwise falls back to
+ * HMAC-SHA256 (`sha256=<hex>`) using the merchant's own webhook secret —
+ * same scheme as the platform-wide WebhookService.
  */
 function signPayload(payload: string, secret: string): string {
-  return "sha256=" + createHmac("sha256", secret).update(payload).digest("hex");
+  return signWebhookPayload(
+    payload,
+    (p) => "sha256=" + createHmac("sha256", secret).update(p).digest("hex"),
+    process.env.WEBHOOK_ED25519_SIGNING_KEY,
+  ).signature;
 }
 
 /**

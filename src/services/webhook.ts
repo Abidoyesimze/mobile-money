@@ -7,15 +7,13 @@ import { gzip } from "zlib";
 import { promisify } from "util";
 import { Transaction, WebhookDeliveryUpdate } from "../models/transaction";
 import { enqueueWebhookRetry } from "../queue/webhookRetryQueue";
+import { signWebhookPayload } from "../crypto/webhookSigning";
 
 const gzipAsync = promisify(gzip);
 
 export type WebhookEvent = "transaction.completed" | "transaction.failed";
 export type WebhookDeliveryStatus =
-  | "pending"
-  | "delivered"
-  | "failed"
-  | "skipped";
+  "pending" | "delivered" | "failed" | "skipped";
 
 export interface WebhookPayload {
   event: WebhookEvent;
@@ -24,10 +22,7 @@ export interface WebhookPayload {
 }
 
 export type WebhookOutboxStatus =
-  | "pending"
-  | "processing"
-  | "delivered"
-  | "failed";
+  "pending" | "processing" | "delivered" | "failed";
 
 export interface WebhookOutboxEntry {
   id: string;
@@ -93,6 +88,12 @@ interface WebhookServiceOptions {
   logger?: WebhookLogger;
   /** When true, payloads are Gzip-compressed before sending (Content-Encoding: gzip) */
   compress?: boolean;
+  /**
+   * Stellar secret seed ("S...") or PEM-encoded Ed25519 private key. When
+   * set, outbound deliveries are cryptographically signed with Ed25519
+   * (`X-Webhook-Signature: ed25519=<hex>`) instead of HMAC-SHA256.
+   */
+  ed25519SigningKey?: string;
 }
 
 interface WebhookTransactionModel {
@@ -162,6 +163,7 @@ export class WebhookService {
   private readonly fetchImpl: typeof fetch;
   private readonly webhookUrl: string;
   private readonly webhookSecret: string;
+  private readonly ed25519SigningKey: string | undefined;
   private readonly maxAttempts: number;
   private readonly baseDelayMs: number;
   private readonly sleepImpl: (ms: number) => Promise<void>;
@@ -175,6 +177,8 @@ export class WebhookService {
     this.webhookUrl = options.webhookUrl ?? process.env.WEBHOOK_URL ?? "";
     this.webhookSecret =
       options.webhookSecret ?? process.env.WEBHOOK_SECRET ?? "";
+    this.ed25519SigningKey =
+      options.ed25519SigningKey ?? process.env.WEBHOOK_ED25519_SIGNING_KEY;
     this.maxAttempts = options.maxAttempts ?? 3;
     this.baseDelayMs = options.baseDelayMs ?? 500;
     this.sleepImpl = options.sleep ?? wait;
@@ -220,10 +224,7 @@ export class WebhookService {
       provider: transaction.provider,
       stellar_address: transaction.stellarAddress,
       status: transaction.status as
-        | "pending"
-        | "completed"
-        | "failed"
-        | "cancelled",
+        "pending" | "completed" | "failed" | "cancelled",
       user_id: transaction.userId || undefined,
       notes: transaction.notes || undefined,
       tags: transaction.tags ? transaction.tags.join(",") : undefined,
@@ -246,8 +247,18 @@ export class WebhookService {
     return payload;
   }
 
+  /**
+   * Sign a payload for the `X-Webhook-Signature` header. Uses Ed25519
+   * (`ed25519=<hex>`) when `WEBHOOK_ED25519_SIGNING_KEY` is configured,
+   * otherwise falls back to HMAC-SHA256 (`sha256=<hex>`).
+   */
   signPayload(rawPayload: string): string {
-    return `sha256=${createHmac("sha256", this.webhookSecret).update(rawPayload).digest("hex")}`;
+    return signWebhookPayload(
+      rawPayload,
+      (payload) =>
+        `sha256=${createHmac("sha256", this.webhookSecret).update(payload).digest("hex")}`,
+      this.ed25519SigningKey,
+    ).signature;
   }
 
   async sendTransactionEvent(
