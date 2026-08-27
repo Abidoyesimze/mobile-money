@@ -53,7 +53,10 @@ import {
 } from "./config/redis";
 import { createOAuthRouter } from "./auth/oauth";
 import { pool } from "./config/database";
-import { getSessionCookieOptions, getSessionTrustProxy } from "./config/session";
+import {
+  getSessionCookieOptions,
+  getSessionTrustProxy,
+} from "./config/session";
 import {
   globalTimeout,
   haltOnTimedout,
@@ -77,6 +80,7 @@ import mtnCallbacksRouter from "./routes/mtnCallbacks";
 import orangeMadagascarCallbacksRouter from "./routes/orangeMadagascarCallbacks";
 import orangeGuineaCallbacksRouter from "./routes/orangeGuineaCallbacks";
 import multisigCallbacksRouter from "./routes/multisigCallbacks";
+import adminWithdrawalsRouter from "./routes/adminWithdrawals";
 import { createMetricsRouter } from "./routes/metrics";
 import sep31Router from "./stellar/sep31";
 import sep24Router from "./stellar/sep24";
@@ -450,6 +454,7 @@ app.use("/api/mtn", mtnCallbacksRouter);
 app.use("/api/orange-madagascar", orangeMadagascarCallbacksRouter);
 app.use("/api/orange-guinea", orangeGuineaCallbacksRouter);
 app.use("/api/multisig", multisigCallbacksRouter);
+app.use("/api/admin/withdrawals", adminWithdrawalsRouter);
 app.use("/api/reports", reportsRoutes);
 app.use("/api/fees", feesRoutes);
 app.use("/api/users", userRoutes);

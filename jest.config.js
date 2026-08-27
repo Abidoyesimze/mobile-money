@@ -9,22 +9,22 @@ module.exports = {
       testEnvironment: "node",
       setupFiles: ["<rootDir>/tests/jest.setup.ts"],
       roots: ["<rootDir>/src", "<rootDir>/tests"],
-      testMatch: [
-        "**/__tests__/**/*.ts",
-        "**/?(*.)+(spec|test).ts",
-      ],
+      testMatch: ["**/__tests__/**/*.ts", "**/?(*.)+(spec|test).ts"],
       // Exclude the frontend JS tests from this project
       testPathIgnorePatterns: [
         "/node_modules/",
         "<rootDir>/src/tests/frontend/",
       ],
       transform: {
-        "^.+\\.ts$": [
-          "ts-jest",
-          { diagnostics: false },
-        ],
+        "^.+\\.ts$": ["ts-jest", { diagnostics: false }],
       },
       moduleFileExtensions: ["ts", "tsx", "js", "jsx", "json", "node"],
+      // Mirrors the (otherwise-dead, since `projects` doesn't inherit
+      // top-level options) mapper below — lets `jest.mock("../foo.js")`
+      // resolve to the real "../foo.ts" source file.
+      moduleNameMapper: {
+        "^(\\.\\.?\\/.+)\\.js$": "$1",
+      },
     },
     {
       displayName: "frontend",
@@ -32,9 +32,7 @@ module.exports = {
       testEnvironment: "jsdom",
       setupFiles: ["<rootDir>/tests/jest.setup.ts"],
       roots: ["<rootDir>/src/tests/frontend"],
-      testMatch: [
-        "**/?(*.)+(spec|test).js",
-      ],
+      testMatch: ["**/?(*.)+(spec|test).js"],
       // The calculator module is plain CommonJS — no transpilation required.
       // An empty transform map tells Jest to load JS files as-is via Node.
       transform: {},
