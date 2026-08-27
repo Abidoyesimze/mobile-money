@@ -1,19 +1,48 @@
 import logger from "../utils/logger";
-import { Router, Response } from "express";
+import {
+  Router,
+  Request,
+  Response,
+  NextFunction,
+  RequestHandler,
+} from "express";
 import { Transform } from "stream";
 import { pipeline } from "stream/promises";
 import PDFDocument from "pdfkit";
 import { requireAuth, AuthRequest } from "../middleware/auth";
+import {
+  DEFAULT_ALLOWED_HEADERS,
+  EXTENDED_ALLOWED_HEADERS,
+  parseTransactionExportFilters as parseFiltersUtil,
+  buildTransactionExportQuery as buildQueryUtil,
+  transactionRowToCsv as rowToCsvUtil,
+  TransactionExportFilters,
+  RawExportQuery,
+} from "../utils/csvExporter";
+import rateLimit from "express-rate-limit";
 
-const ALLOWED_HEADERS = [
-  "id",
-  "user_id",
-  "amount",
-  "currency",
-  "type",
-  "status",
-  "created_at",
-  "description",
+export const ALLOWED_HEADERS = [
+  ...DEFAULT_ALLOWED_HEADERS,
+  ...EXTENDED_ALLOWED_HEADERS.filter(
+    (h) => !DEFAULT_ALLOWED_HEADERS.includes(h),
+  ),
+];
+
+export const ADMIN_DISPLAY_HEADERS = [
+  "ID",
+  "Reference Number",
+  "Type",
+  "Amount",
+  "Phone Number",
+  "Provider",
+  "Status",
+  "Stellar Address",
+  "Tags",
+  "Notes",
+  "Admin Notes",
+  "User ID",
+  "Created At",
+  "Updated At",
 ];
 
 const PDF_COLUMN_LABELS: Record<string, string> = {
@@ -27,92 +56,46 @@ const PDF_COLUMN_LABELS: Record<string, string> = {
   description: "Description",
 };
 
-interface TransactionExportFilters {
-  startDate?: string;
-  endDate?: string;
-  status?: string;
-  type?: string;
-  fields?: string[];
-  userId?: string;
+export function parseTransactionExportFilters(
+  query: RawExportQuery,
+): TransactionExportFilters {
+  return parseFiltersUtil(query);
 }
 
-function parseTransactionExportFilters(query: any): TransactionExportFilters {
-  return {
-    startDate: query.startDate,
-    endDate: query.endDate,
-    status: query.status,
-    type: query.type,
-    // userId is intentionally not read from the query string here — it is
-    // always forced to the authenticated caller's own ID below, so a user
-    // can never export another user's transactions by passing ?userId=...
-    fields: query.fields
-      ? String(query.fields)
-          .split(",")
-          .map((f) => f.trim())
-      : undefined,
-  };
-}
-
-function buildTransactionExportQuery(
+export function buildTransactionExportQuery(
   filters: TransactionExportFilters,
-  exportHeaders: string[],
+  exportHeaders?: string[],
 ) {
-  const conditions = [];
-  const values = [];
-  let paramCount = 1;
-
-  if (filters.userId) {
-    conditions.push(`user_id = $${paramCount++}`);
-    values.push(filters.userId);
-  }
-
-  if (filters.startDate) {
-    conditions.push(`created_at >= $${paramCount++}`);
-    values.push(filters.startDate);
-  }
-
-  if (filters.endDate) {
-    conditions.push(`created_at <= $${paramCount++}`);
-    values.push(filters.endDate);
-  }
-
-  if (filters.status) {
-    conditions.push(`status = $${paramCount++}`);
-    values.push(filters.status);
-  }
-
-  if (filters.type) {
-    conditions.push(`type = $${paramCount++}`);
-    values.push(filters.type);
-  }
-
-  const whereClause =
-    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-  const selectFields = exportHeaders.join(", ");
-  const text = `SELECT ${selectFields} FROM transactions ${whereClause} ORDER BY created_at DESC`;
-
-  return { text, values };
+  return buildQueryUtil(filters, exportHeaders);
 }
 
-function transactionRowToCsv(
+export function transactionRowToCsv(
   row: Record<string, unknown>,
   headers: string[],
 ): string {
-  const values = headers.map((header) => {
-    const value = row[header];
-    if (value === null || value === undefined) return "";
-    const stringValue = String(value);
-    // Escape commas and quotes
-    if (
-      stringValue.includes(",") ||
-      stringValue.includes('"') ||
-      stringValue.includes("\n")
-    ) {
-      return `"${stringValue.replace(/"/g, '""')}"`;
-    }
-    return stringValue;
-  });
-  return values.join(",") + "\n";
+  return rowToCsvUtil(row, headers);
+}
+
+export const exportRateLimiter =
+  process.env.NODE_ENV === "test"
+    ? (_req: Request, _res: Response, next: NextFunction) => next()
+    : rateLimit({
+        windowMs: 60 * 60 * 1000,
+        max: 30,
+        standardHeaders: true,
+        legacyHeaders: false,
+        message: { error: "Too many export requests, please try again later." },
+      });
+
+export interface ExportRouteOptions {
+  db?: {
+    connect: () => Promise<{
+      query: (q: unknown) => unknown;
+      release: () => void;
+    }>;
+  };
+  createQueryStream?: (text: string, values: unknown[]) => unknown;
+  rateLimiter?: RequestHandler;
 }
 
 /** Render a transaction row stream as a paginated PDF table, piped directly to `res`. */
@@ -193,19 +176,18 @@ async function streamPdfExport(
   doc.end();
 }
 
-export function createExportRoutes(options?: {
-  db?: any;
-  createQueryStream?: any;
-}) {
+export function createExportRoutes(options?: ExportRouteOptions) {
   const db = options?.db || require("../config/database").pool;
   const createQueryStream =
     options?.createQueryStream || require("pg-query-stream");
 
   const router = Router();
+  const limiter = options?.rateLimiter || exportRateLimiter;
 
   router.get(
     "/export",
     requireAuth,
+    limiter,
     async (req: AuthRequest, res: Response) => {
       let client: any;
       let clientReleased = false;
@@ -221,19 +203,21 @@ export function createExportRoutes(options?: {
           return res.status(401).json({ error: "Unauthorized" });
         }
 
-        const filters = parseTransactionExportFilters(req.query);
+        const filters = parseTransactionExportFilters(
+          req.query as RawExportQuery,
+        );
         // Always scope to the authenticated caller — never trust a
         // client-supplied userId, otherwise any user could export another
         // user's transactions by guessing their ID.
         filters.userId = req.user.id;
 
         const requestedFields = filters.fields?.filter((f: string) =>
-          ALLOWED_HEADERS.includes(f),
+          ALLOWED_HEADERS.includes(f.toLowerCase()),
         );
         const exportHeaders =
           requestedFields && requestedFields.length > 0
             ? requestedFields
-            : ALLOWED_HEADERS;
+            : DEFAULT_ALLOWED_HEADERS;
 
         const { text, values } = buildTransactionExportQuery(
           filters,
