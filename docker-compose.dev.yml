@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   app:
     image: node:20-alpine
@@ -26,7 +24,8 @@ services:
       - STELLAR_HORIZON_URL=http://stellar:8000
       - STELLAR_NETWORK=local
     env_file:
-      - .env
+      - path: .env
+        required: false
     depends_on:
       db:
         condition: service_healthy
