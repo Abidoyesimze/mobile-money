@@ -18,6 +18,8 @@ const isoCountryCode = z
 import { ERROR_CODES } from "../constants/errorCodes";
 import { createError } from "../middleware/errorHandler";
 import { UserModel } from "../models/users";
+import { CustomerDataMaskingService } from "../services/customerDataMaskingService";
+import { createDeleteCustomerHandler } from "../routes/sep12";
 
 /**
  * SEP-12: KYC API
@@ -327,6 +329,7 @@ export class Sep12Service {
         FROM users u
         LEFT JOIN kyc_applicants ka ON u.id = ka.user_id
         WHERE u.stellar_address = $1
+          AND u.anonymized_at IS NULL
         ORDER BY ka.updated_at DESC
         LIMIT 1
       `;
@@ -609,24 +612,18 @@ export class Sep12Service {
   }
 
   /**
-   * Delete customer information
+   * Delete customer information (GDPR / NDPR erasure).
+   *
+   * Personal data is anonymized rather than hard-deleted so the financial
+   * audit trail survives — see {@link CustomerDataMaskingService}.
+   *
+   * @returns `false` when no customer exists for the account.
    */
-  async deleteCustomer(account: string): Promise<void> {
-    try {
-      const deleteQuery = `
-        DELETE FROM kyc_applicants
-        WHERE user_id IN (
-          SELECT id FROM users WHERE stellar_address = $1
-        )
-      `;
-
-      await this.db.query(deleteQuery, [account]);
-    } catch (error) {
-      logger.error("Error deleting customer:", error);
-      throw new Error(
-        `Failed to delete customer: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
-    }
+  async deleteCustomer(account: string): Promise<boolean> {
+    const result = await new CustomerDataMaskingService(
+      this.db,
+    ).anonymizeByStellarAccount(account);
+    return result !== null;
   }
 
   /**
@@ -736,39 +733,12 @@ export const createSep12Router = (db: Pool): Router => {
 
   /**
    * DELETE /customer/:account
-   * * Delete customer information (GDPR compliance)
+   * * Anonymize customer PII (GDPR / NDPR) while keeping the AML audit trail.
    */
   router.delete(
     "/customer/:account",
     sep12Limiter,
-    async (req: Request, res: Response) => {
-      try {
-        const { account } = req.params;
-
-        if (!account) {
-          throw createError(
-            ERROR_CODES.INVALID_INPUT,
-            "account parameter is required",
-            {
-              error: "account parameter is required",
-            },
-          );
-        }
-
-        await sep12Service.deleteCustomer(account);
-
-        res.status(204).send();
-      } catch (error: any) {
-        logger.error("[SEP-12] Error deleting customer:", error);
-        throw createError(
-          ERROR_CODES.INTERNAL_ERROR,
-          error.message || "Failed to delete customer information",
-          {
-            error: error.message || "Failed to delete customer information",
-          },
-        );
-      }
-    },
+    createDeleteCustomerHandler(new CustomerDataMaskingService(db)),
   );
 
   return router;
