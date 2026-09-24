@@ -1,8 +1,8 @@
 import logger from "../utils/logger";
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import { sep24RateLimiter } from "../middleware/rateLimit";
 import { v4 as uuidv4 } from "uuid";
-import { Transaction, Keypair, StrKey } from "@stellar/stellar-sdk";
+import { Transaction, Keypair, StrKey, Memo } from "@stellar/stellar-sdk";
 import {
   getStellarServer,
   getNetworkPassphrase,
@@ -15,6 +15,16 @@ import {
   generateSignedSep24Url,
   verifySep24Signature,
 } from "../utils/sep24Signature";
+import {
+  Sep24MemoType,
+  formatSep24ValidationError,
+  sep24DepositRequestSchema,
+  toStellarMemo,
+} from "../validators/sep24";
+import {
+  PostgresSep24TransactionStore,
+  Sep24TransactionStore,
+} from "./sep24Store";
 
 function isValidStellarPublicKey(key: string): boolean {
   try {
@@ -67,7 +77,8 @@ export interface Sep24Transaction {
   asset_out?: string;
   account?: string;
   memo?: string;
-  memo_type?: "text" | "hash" | "id";
+  memo_type?: Sep24MemoType;
+  stellar_transaction_id?: string;
   from?: string;
   to?: string;
   callback?: string;
@@ -92,7 +103,9 @@ export interface DepositRequest {
   asset_code: string;
   amount: string;
   account: string;
+  /** Memo to attach to the Stellar payment, e.g. for a shared exchange address. */
   memo?: string;
+  memo_type?: Sep24MemoType;
   email?: string;
   wallet_name?: string;
   wallet_url?: string;
@@ -125,6 +138,33 @@ export interface InteractiveFlowResponse {
 }
 
 const transactions = new Map<string, Sep24Transaction>();
+
+let transactionStore: Sep24TransactionStore =
+  new PostgresSep24TransactionStore();
+
+/** Swap the persistence backend (used by tests and alternative deployments). */
+export const setSep24TransactionStore = (
+  store: Sep24TransactionStore,
+): void => {
+  transactionStore = store;
+};
+
+/**
+ * Write-through to durable storage. Failures are logged rather than thrown so
+ * a database outage does not break the interactive flow.
+ */
+async function persistTransaction(
+  transaction: Sep24Transaction,
+): Promise<void> {
+  try {
+    await transactionStore.save({ ...transaction });
+  } catch (error) {
+    logger.error(
+      { err: error, transactionId: transaction.id },
+      "[sep24] Failed to persist transaction",
+    );
+  }
+}
 
 // Token limits: max active interactive transactions per account
 const MAX_ACTIVE_TRANSACTIONS_PER_ACCOUNT = 5;
@@ -245,6 +285,9 @@ export const generateInteractiveUrl = async (
     amount_in: request.amount,
     account: request.account,
     memo: request.memo,
+    memo_type: request.memo
+      ? ("memo_type" in request && request.memo_type) || "text"
+      : undefined,
     callback: request.callback,
     created_at: new Date().toISOString(),
   };
@@ -261,6 +304,7 @@ export const generateInteractiveUrl = async (
   });
 
   if (request.memo) params.append("memo", request.memo);
+  if (transaction.memo_type) params.append("memo_type", transaction.memo_type);
   if (request.email) params.append("email", request.email);
   if (request.wallet_name) params.append("wallet_name", request.wallet_name);
   if (request.wallet_url) params.append("wallet_url", request.wallet_url);
@@ -282,6 +326,8 @@ export const generateInteractiveUrl = async (
       Object.fromEntries(params),
     );
 
+    await persistTransaction(transaction);
+
     return {
       url: signedUrl,
       id: transactionId,
@@ -295,8 +341,13 @@ export const generateInteractiveUrl = async (
 };
 
 export const initiateDeposit = async (
-  request: DepositRequest,
+  input: DepositRequest,
 ): Promise<InteractiveFlowResponse> => {
+  const parsed = sep24DepositRequestSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new Error(formatSep24ValidationError(parsed.error));
+  }
+  const request = parsed.data as DepositRequest;
   const config = getSep24Config();
   const asset = config.assets[request.asset_code as keyof typeof config.assets];
 
@@ -378,6 +429,7 @@ export const updateTransactionStatus = (
     transaction.completed_at = new Date().toISOString();
 
   transactions.set(id, transaction);
+  void persistTransaction(transaction);
 
   // Decrement active count when transaction reaches terminal state
   if (["completed", "failed", "expired"].includes(status)) {
@@ -439,6 +491,7 @@ export const processCallback = async (
   }
 
   transactions.set(transaction_id, transaction);
+  void persistTransaction(transaction);
 
   if (statusChanged && transaction.callback) {
     enqueueSepWebhook(
@@ -451,6 +504,87 @@ export const processCallback = async (
     );
   }
 
+  return transaction;
+};
+
+/** Sends the Stellar payment for a deposit (StellarService in production). */
+export interface DepositPaymentSender {
+  sendPayment(
+    destination: string,
+    amount: string,
+    senderName?: string,
+    receiverName?: string,
+    useFeeBump?: boolean,
+    memo?: Memo,
+  ): Promise<{ hash?: string }>;
+}
+
+async function defaultPaymentSender(): Promise<DepositPaymentSender> {
+  const { StellarService } =
+    await import("../services/stellar/stellarService.js");
+  return new StellarService();
+}
+
+/**
+ * Fulfils a SEP-24 deposit by sending the asset to the wallet's account,
+ * attaching the memo the wallet supplied so shared exchange addresses can
+ * credit the right customer. Call once the off-chain (mobile money) leg has
+ * been received.
+ *
+ * On a submission error the transaction stays `pending_stellar` and the
+ * error is rethrown: the payment may still land, so blindly retrying could
+ * pay twice.
+ */
+export const fulfillDeposit = async (
+  id: string,
+  sender?: DepositPaymentSender,
+): Promise<Sep24Transaction> => {
+  const transaction = transactions.get(id);
+  if (!transaction) throw new Error(`Transaction ${id} not found`);
+  if (transaction.kind !== "deposit") {
+    throw new Error(`Transaction ${id} is not a deposit`);
+  }
+  if (transaction.status === "completed") return transaction;
+  if (transaction.status === "pending_stellar") {
+    throw new Error(`Deposit ${id} is already being submitted`);
+  }
+  if (["failed", "expired"].includes(transaction.status)) {
+    throw new Error(`Deposit ${id} is ${transaction.status}`);
+  }
+
+  const amount = transaction.amount_out ?? transaction.amount_in;
+  if (!transaction.account || !amount) {
+    throw new Error(`Deposit ${id} is missing account or amount`);
+  }
+
+  const memo = transaction.memo
+    ? toStellarMemo(transaction.memo, transaction.memo_type ?? "text")
+    : undefined;
+
+  updateTransactionStatus(id, "pending_stellar");
+
+  let result: { hash?: string };
+  try {
+    const payer = sender ?? (await defaultPaymentSender());
+    result = await payer.sendPayment(
+      transaction.account,
+      amount,
+      undefined,
+      undefined,
+      false,
+      memo,
+    );
+  } catch (error) {
+    transaction.message = `Stellar submission failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    await persistTransaction(transaction);
+    throw error;
+  }
+
+  transaction.stellar_transaction_id = result.hash;
+  updateTransactionStatus(id, "completed");
+  await persistTransaction(transaction);
   return transaction;
 };
 
@@ -526,34 +660,55 @@ sep24Router.get("/fee", async (req: Request, res: Response) => {
   }
 });
 
-sep24Router.post(
-  "/deposit",
-  sep24Limiter,
-  async (req: Request, res: Response) => {
-    try {
-      const result = await initiateDeposit(req.body);
-      res.json(result);
-    } catch (error: any) {
-      throw createError(ERROR_CODES.INVALID_INPUT, error.message, {
+// Express 4 does not route async throws to the error handler, so failures
+// are passed to next() explicitly.
+const depositHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const result = await initiateDeposit(req.body);
+    res.json(result);
+  } catch (error: any) {
+    next(
+      createError(ERROR_CODES.INVALID_INPUT, error.message, {
         error: error.message,
-      });
-    }
-  },
-);
+      }),
+    );
+  }
+};
 
-sep24Router.post(
-  "/withdraw",
-  sep24Limiter,
-  async (req: Request, res: Response) => {
-    try {
-      const result = await initiateWithdrawal(req.body);
-      res.json(result);
-    } catch (error: any) {
-      throw createError(ERROR_CODES.INVALID_INPUT, error.message, {
+const withdrawHandler = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const result = await initiateWithdrawal(req.body);
+    res.json(result);
+  } catch (error: any) {
+    next(
+      createError(ERROR_CODES.INVALID_INPUT, error.message, {
         error: error.message,
-      });
-    }
-  },
+      }),
+    );
+  }
+};
+
+sep24Router.post("/deposit", sep24Limiter, depositHandler);
+sep24Router.post("/withdraw", sep24Limiter, withdrawHandler);
+
+// Canonical SEP-24 paths.
+sep24Router.post(
+  "/transactions/deposit/interactive",
+  sep24Limiter,
+  depositHandler,
+);
+sep24Router.post(
+  "/transactions/withdraw/interactive",
+  sep24Limiter,
+  withdrawHandler,
 );
 
 sep24Router.get("/transaction/:id", async (req: Request, res: Response) => {

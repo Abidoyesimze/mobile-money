@@ -233,6 +233,7 @@ export class StellarService {
     senderName?: string,
     receiverName?: string,
     useFeeBump?: boolean,
+    memo?: StellarSdk.Memo,
   ): Promise<{
     hash?: string;
     submittedAt?: Date;
@@ -283,6 +284,7 @@ export class StellarService {
         console.log("Mock Stellar payment:", {
           to: resolvedDestinationAddress,
           amount,
+          memoType: memo?.type,
         });
 
         transactionTotal.inc({
@@ -313,7 +315,7 @@ export class StellarService {
       );
 
       const baseFee = await this.getNetworkBaseFee();
-      const transaction = new StellarSdk.TransactionBuilder(account, {
+      const builder = new StellarSdk.TransactionBuilder(account, {
         fee: baseFee.toString(),
         networkPassphrase: getNetworkPassphrase(),
       })
@@ -324,8 +326,10 @@ export class StellarService {
             amount: amount,
           }),
         )
-        .setTimeout(30)
-        .build();
+        .setTimeout(30);
+      // e.g. the SEP-24 deposit memo a shared exchange address needs.
+      if (memo) builder.addMemo(memo);
+      const transaction = builder.build();
 
       transaction.sign(this.issuerKeypair);
 
