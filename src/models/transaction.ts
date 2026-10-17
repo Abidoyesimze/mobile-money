@@ -20,6 +20,11 @@ export enum TransactionStatus {
   Failed = "failed",
   Cancelled = "cancelled",
   Review = "review",
+  /**
+   * Held before provider dispatch by AML velocity monitoring until a
+   * compliance officer releases (back to Pending) or rejects (Cancelled) it.
+   */
+  PendingReview = "pending_review",
   Dispute = "dispute",
   Reversed = "reversed",
   ClawedBack = "clawed_back",
@@ -276,7 +281,14 @@ export const ALLOWED_STATUS_TRANSITIONS: Record<
     TransactionStatus.Failed,
     TransactionStatus.Cancelled,
     TransactionStatus.Review,
+    TransactionStatus.PendingReview,
     TransactionStatus.Expired,
+  ],
+  [TransactionStatus.PendingReview]: [
+    TransactionStatus.PendingReview,
+    TransactionStatus.Pending,
+    TransactionStatus.Cancelled,
+    TransactionStatus.Failed,
   ],
   [TransactionStatus.Processing]: [
     TransactionStatus.Processing,
