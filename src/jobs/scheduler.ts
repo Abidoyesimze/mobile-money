@@ -36,12 +36,15 @@ import { runHighValueComplianceReportJob } from "./highValueComplianceReportJob"
 import { runStellarReconciliationJob } from "../workers/stellarReconciliation";
 import { runAirtelReconciliationWorker } from "../workers/airtelReconciliation";
 import { runQuoteExpirationJob } from "./quoteExpirationJob";
+import { runDailySarSummaryJob } from "./dailySarSummaryJob";
 import { withJobTrace } from "../queue/jobTracing";
 
 interface JobConfig {
   name: string;
   schedule: string;
   handler: () => Promise<void>;
+  /** IANA timezone for the cron expression (defaults to the server timezone). */
+  timezone?: string;
 }
 
 const JOBS: JobConfig[] = [
@@ -235,6 +238,14 @@ const JOBS: JobConfig[] = [
     handler: runHighValueComplianceReportJob,
   },
   {
+    name: "daily-sar-summary",
+    // Daily at midnight UTC - encrypts the previous day's flagged-activity
+    // summary into the compliance archive and notifies the compliance team
+    schedule: process.env.DAILY_SAR_SUMMARY_CRON || "0 0 * * *",
+    timezone: "UTC",
+    handler: runDailySarSummaryJob,
+  },
+  {
     name: "dlq-cleanup",
     // Daily at 3:30 AM — removes DLQ entries older than 90 days after overnight audit window
     schedule: process.env.DLQ_CLEANUP_CRON || "30 3 * * *",
@@ -293,7 +304,12 @@ export function startJobs(): void {
       );
       continue;
     }
-    cron.schedule(job.schedule, () => runJob(job));
+    const run = () => runJob(job);
+    if (job.timezone) {
+      cron.schedule(job.schedule, run, { timezone: job.timezone });
+    } else {
+      cron.schedule(job.schedule, run);
+    }
     console.log(`[scheduler] "${job.name}" scheduled - ${job.schedule}`);
   }
 
