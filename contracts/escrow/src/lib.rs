@@ -265,11 +265,6 @@ impl EscrowContract {
         // Any Stellar asset can be passed through the token address.
         let token_client = token::Client::new(&env, &token);
 
-        // Validate depositor balance before locking funds.
-        let balance = token_client.balance(&depositor);
-
-        assert!(balance >= amount, "insufficient token balance");
-
         // Effects — publish the escrow *before* the deposit is pulled in, so a
         // callback from the token always observes a fully-formed escrow. The
         // admin signer list goes to its own entry: it is cold data and must
@@ -299,7 +294,7 @@ impl EscrowContract {
 
         env.storage().instance().extend_ttl(1000, 10000);
 
-        // Interaction — only now are funds moved.
+        // Interaction — only now are funds moved. Transfer directly asserts sufficient balance.
         token_client.transfer(&depositor, env.current_contract_address(), &amount);
     }
 
@@ -375,7 +370,6 @@ impl EscrowContract {
         // callback from the token can never observe or re-spend a live escrow.
         state.released = true;
         env.storage().instance().set(&ESCROW, &state);
-        env.storage().instance().extend_ttl(1000, 10000);
 
         // Interactions
         let tc = token::Client::new(&env, &state.token);
@@ -412,7 +406,6 @@ impl EscrowContract {
         // Effects — close the escrow before the transfer below.
         state.released = true;
         env.storage().instance().set(&ESCROW, &state);
-        env.storage().instance().extend_ttl(1000, 10000);
 
         // Interaction
         token::Client::new(&env, &state.token).transfer(
@@ -441,7 +434,6 @@ impl EscrowContract {
         // Effects — close the escrow before the transfer below.
         state.released = true;
         env.storage().instance().set(&ESCROW, &state);
-        env.storage().instance().extend_ttl(1000, 10000);
 
         // Interaction
         token::Client::new(&env, &state.token).transfer(
@@ -473,7 +465,6 @@ impl EscrowContract {
         // Effects — close the escrow before the transfer below.
         state.released = true;
         env.storage().instance().set(&ESCROW, &state);
-        env.storage().instance().extend_ttl(1000, 10000);
 
         // Interaction
         token::Client::new(&env, &state.token).transfer(

@@ -1,4 +1,3 @@
-import { ipReputationService } from "../services/ipReputation";
 import logger from "../utils/logger";
 import { Router, Request, Response, NextFunction } from "express";
 import { sep24RateLimiter } from "../middleware/rateLimit";
@@ -13,6 +12,7 @@ import { ERROR_CODES } from "../constants/errorCodes";
 import { TransactionModel } from "../models/transaction";
 import { createError } from "../middleware/errorHandler";
 import { enqueueSepWebhook } from "../services/stellar/webhooks";
+import { enqueueCallbackRetry } from "../queue/callbackQueue";
 import {
   generateSignedSep24Url,
   verifySep24Signature,
@@ -463,6 +463,15 @@ export const updateTransactionStatus = (
     ).catch((err) =>
       logger.error(`[sep24-webhook] Error enqueuing webhook:`, err),
     );
+
+    enqueueCallbackRetry({
+      transactionId: transaction.id,
+      status,
+      callbackUrl: transaction.callback,
+      payload: transaction as unknown as Record<string, unknown>,
+    }).catch((err) =>
+      logger.error(`[sep24-callback] Error enqueuing callback retry:`, err),
+    );
   }
 
   return transaction;
@@ -519,6 +528,15 @@ export const processCallback = async (
       transaction,
     ).catch((err) =>
       logger.error(`[sep24-webhook] Error enqueuing webhook:`, err),
+    );
+
+    enqueueCallbackRetry({
+      transactionId: transaction.id,
+      status,
+      callbackUrl: transaction.callback,
+      payload: transaction as unknown as Record<string, unknown>,
+    }).catch((err) =>
+      logger.error(`[sep24-callback] Error enqueuing callback retry:`, err),
     );
   }
 

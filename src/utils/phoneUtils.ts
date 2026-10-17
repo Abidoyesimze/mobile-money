@@ -4,6 +4,8 @@ import {
   type PhoneNumber,
 } from "libphonenumber-js";
 
+export type { CountryCode };
+
 export type MobileProvider = "mtn" | "airtel" | "orange" | "vodacom" | "tigo";
 export type PhoneOutputFormat =
   "e164" | "national" | "international" | "rfc3966";
@@ -379,4 +381,87 @@ export function formatPhoneForProvider(
   }
 
   return config.output === "national" ? parsed.nationalNumber : parsed.number;
+}
+
+export interface CleanMoMoBackupResult {
+  valid: boolean;
+  cleanPhoneNumber?: string;
+  provider?: MobileProvider | null;
+  country?: CountryCode;
+  error?: string;
+}
+
+export interface CleanMoMoBackupOptions {
+  expectedProvider?: string;
+  defaultRegion?: CountryCode;
+  enforceProviderMatch?: boolean;
+}
+
+/**
+ * Validates, cleans, and normalizes a MoMo (Mobile Money) backup phone number.
+ * 
+ * Ensures:
+ * 1. Input is non-empty and well-formed.
+ * 2. Parses to valid E.164 standard.
+ * 3. Cannot be identical to the primary phone number (if primary is provided).
+ * 4. Detects or verifies that the phone number is tied to a supported MoMo provider.
+ */
+export function cleanMoMoBackupNumber(
+  backupPhoneNumber: string,
+  primaryPhoneNumber?: string,
+  options?: CleanMoMoBackupOptions,
+): CleanMoMoBackupResult {
+  if (typeof backupPhoneNumber !== "string" || !backupPhoneNumber.trim()) {
+    return { valid: false, error: "Backup phone number is required" };
+  }
+
+  const region = options?.defaultRegion || "CM";
+  const parsed = parseFlexiblePhoneNumber(backupPhoneNumber, region);
+  if (!parsed || !parsed.isValid()) {
+    return { valid: false, error: "Invalid backup phone number format" };
+  }
+
+  const cleanBackup = parsed.number;
+
+  if (
+    primaryPhoneNumber &&
+    typeof primaryPhoneNumber === "string" &&
+    primaryPhoneNumber.trim()
+  ) {
+    const parsedPrimary = parseFlexiblePhoneNumber(primaryPhoneNumber, region);
+    const cleanPrimary = parsedPrimary?.isValid()
+      ? parsedPrimary.number
+      : primaryPhoneNumber.trim().replace(/\s+/g, "");
+    if (cleanBackup === cleanPrimary) {
+      return {
+        valid: false,
+        error: "Backup phone number cannot be the same as primary phone number",
+      };
+    }
+  }
+
+  const detected = detectProvider(cleanBackup, parsed.country);
+
+  if (options?.expectedProvider) {
+    const match = validatePhoneProviderMatch(
+      cleanBackup,
+      options.expectedProvider,
+      parsed.country,
+    );
+    if (!match.valid && options.enforceProviderMatch) {
+      return {
+        valid: false,
+        error:
+          match.error ||
+          `Phone number does not match expected provider ${options.expectedProvider}`,
+      };
+    }
+  }
+
+  return {
+    valid: true,
+    cleanPhoneNumber: cleanBackup,
+    provider: detected,
+    country: parsed.country,
+  };
 }
