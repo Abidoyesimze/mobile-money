@@ -45,6 +45,7 @@
     "reconcile:ledger": "tsx src/scripts/reconcile-ledger.ts",
     "backup:create": "tsx src/scripts/backup.ts",
     "backup:verify": "tsx src/scripts/verify-backups.ts",
+    "backup:restore-test": "bash scripts/backup-restore-test.sh",
     "reindex:bloated-indexes": "tsx src/scripts/reindex-bloated-indexes.ts",
     "postinstall": "npm run prepare",
     "contracts:build": "cd contracts && cargo build --target wasm32v1-none --release",
