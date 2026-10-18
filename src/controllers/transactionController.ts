@@ -19,6 +19,7 @@ import {
 } from "../config/providers";
 import type { TransactionJobData } from "../queue/transactionQueue";
 import { amlService } from "../services/aml";
+import { amlVelocityService } from "../services/amlVelocityService";
 import {
   generateFlaggedTransactionComplianceReport,
   generateHighValueTransactionComplianceReport,
@@ -398,6 +399,41 @@ async function applyPreDispatchAMLProfile(
       `Pre-dispatch AML profiling failed for transaction ${transaction.id}:`,
       error,
     );
+  }
+}
+
+/**
+ * Rolling-window velocity check (1h / 24h / 30d). A breach flags the
+ * transaction for compliance review and holds it in PENDING_REVIEW.
+ * Returns true when the transaction was held and must not be dispatched.
+ * Fails open on infrastructure errors, like the other AML pre-dispatch checks.
+ */
+async function applyAMLVelocityHold(transaction: Transaction): Promise<boolean> {
+  if (!transaction.userId) return false;
+
+  const amount = Number(transaction.amount);
+  if (!Number.isFinite(amount) || amount < 0) return false;
+
+  try {
+    const result = await amlVelocityService.enforce({
+      id: transaction.id,
+      userId: transaction.userId,
+      type: transaction.type as import("../services/aml").AMLTransactionType,
+      amount,
+      createdAt:
+        transaction.createdAt instanceof Date
+          ? transaction.createdAt
+          : new Date(transaction.createdAt),
+      status: transaction.status,
+      currency: transaction.currency,
+    });
+    return result.held;
+  } catch (error) {
+    logger.error(
+      `AML velocity check failed for transaction ${transaction.id}:`,
+      error,
+    );
+    return false;
   }
 }
 
@@ -816,6 +852,13 @@ async function processTransactionRequest(
             void monitorTransactionForAML(transaction);
             void applyTravelRule(transaction);
             await applySEP08Verification(transaction);
+
+            if (await applyAMLVelocityHold(transaction)) {
+              return {
+                ...buildTransactionResponse(transaction),
+                status: TransactionStatus.PendingReview,
+              };
+            }
 
             const job = await addTransactionJob(
               {

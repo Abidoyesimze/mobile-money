@@ -34,6 +34,7 @@ import { isBlacklisted } from "../middleware/ipBlacklist";
 import { queryRead, queryWrite } from "../config/database";
 import subscriptionModel from "../models/subscription";
 import logger from "../utils/logger";
+import { amlScreeningService } from "../services/amlScreening";
 
 import { queueOptions, getWorkerConcurrency } from "./config";
 
@@ -224,6 +225,58 @@ async function resolveKycName(userId: string): Promise<string | null> {
   }
 }
 
+/**
+ * Screens the cash-out recipient against OFAC/UN/EU sanctions and PEP lists
+ * before any disbursement. A match moves the transaction to `review` (frozen
+ * for high-confidence sanctions hits) and returns true so the caller stops.
+ * The customer is deliberately not notified (tipping-off).
+ */
+async function holdWithdrawalIfSanctioned(
+  transactionId: string,
+  userId?: string | null,
+): Promise<boolean> {
+  const recipientName = userId ? await resolveKycName(userId) : null;
+  if (!recipientName) {
+    logger.warn(
+      { transactionId },
+      "[Screening] No KYC name available; skipping sanctions/PEP screening",
+    );
+    return false;
+  }
+
+  const result = await amlScreeningService.screenRecipient({
+    transactionId,
+    userId: userId ?? undefined,
+    recipientName,
+  });
+
+  if (result.pepMatches.length > 0) {
+    await transactionModel.addTags(transactionId, ["pep-flagged"]);
+  }
+  if (result.decision === "clear" || !result.topSanctionsMatch) return false;
+
+  const { topSanctionsMatch: top } = result;
+  const frozen = result.decision === "block";
+  await transactionModel.updateStatus(transactionId, TransactionStatus.Review);
+  await Promise.all([
+    transactionModel.addTags(transactionId, [
+      "compliance-hold",
+      frozen ? "sanctions-frozen" : "sanctions-review",
+    ]),
+    transactionModel.patchMetadata(transactionId, {
+      sanctionsScreening: {
+        frozen,
+        list: top.source,
+        listReference: top.externalId ?? null,
+        score: top.score,
+        auditRecordIds: result.auditRecordIds,
+        screenedAt: new Date().toISOString(),
+      },
+    }),
+  ]);
+  return true;
+}
+
 async function processTransaction(
   data: TransactionJobData,
 ): Promise<TransactionJobResult> {
@@ -329,6 +382,14 @@ async function processTransaction(
 
   // Resolve sender name for sanction screening (best-effort; falls back to phone number)
   const txRow = await transactionModel.findById(transactionId);
+
+  if (
+    type === "withdraw" &&
+    (await holdWithdrawalIfSanctioned(transactionId, txRow?.userId))
+  ) {
+    return { success: false, transactionId };
+  }
+
   const senderName =
     (txRow?.userId ? await resolveKycName(txRow.userId) : null) ?? phoneNumber;
   // Receiver is the mobile money account holder identified by their phone number
