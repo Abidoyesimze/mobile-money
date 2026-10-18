@@ -37,6 +37,7 @@ import logger from "../utils/logger";
 import { amlScreeningService } from "../services/amlScreening";
 
 import { queueOptions, getWorkerConcurrency } from "./config";
+import { providerQueueControl } from "./providerQueueControl";
 
 const transactionModel = new TransactionModel();
 const mobileMoneyService = new MobileMoneyService();
@@ -761,8 +762,19 @@ export const transactionWorker:
     }
   : new Worker<TransactionJobData, TransactionJobResult>(
       TRANSACTION_QUEUE_NAME,
-      async (job) =>
-        withJobTrace(
+      async (job) => {
+        // Provider paused for maintenance (#2282): divert the job to the
+        // provider's hold queue before any provider I/O. It is re-queued
+        // here automatically when the provider is resumed.
+        if (await providerQueueControl.divertIfPaused(job)) {
+          return {
+            success: false,
+            transactionId: job.data.transactionId,
+            error: "provider_paused",
+          };
+        }
+
+        return withJobTrace(
           "queue.transaction.process",
           job.data,
           () => processTransaction(job.data),
@@ -775,7 +787,8 @@ export const transactionWorker:
             "transaction.id": job.data.transactionId,
             "transaction.type": job.data.type,
           },
-        ),
+        );
+      },
       { ...queueOptions, concurrency: CONCURRENCY },
     );
 

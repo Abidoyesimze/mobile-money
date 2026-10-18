@@ -2,6 +2,7 @@ import { Queue } from "bullmq";
 import { queueOptions } from "./config";
 import { injectTraceContext } from "./jobTracing";
 import { TransactionModel, TransactionStatus } from "../models/transaction";
+import { providerQueueControl } from "./providerQueueControl";
 
 export const TRANSACTION_QUEUE_NAME = "transaction-processing-queue";
 export const TRANSACTION_JOB_NAME = "transaction-process";
@@ -69,6 +70,16 @@ export async function addTransactionJob(
     jobId?: string;
   },
 ): Promise<{ id: string | undefined }> {
+  // Providers under maintenance (#2282): park the job in the provider's hold
+  // queue instead of dispatching it. Repeatable schedules are left alone; the
+  // worker diverts their individual runs if they fire while paused.
+  if (!options?.repeat && (await providerQueueControl.isPaused(data.provider))) {
+    return providerQueueControl.hold(injectTraceContext(data), {
+      jobId: options?.jobId,
+      priority: options?.priority,
+    });
+  }
+
   // Embed the active OpenTelemetry context so the worker continues the same
   // distributed trace (HTTP → queue → processor).
   const job = await transactionQueue.add(

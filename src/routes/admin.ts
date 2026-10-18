@@ -54,6 +54,9 @@ import { resetCircuitBreakerForProvider } from "../utils/circuitBreaker";
 import { ERROR_CODES } from "../constants/errorCodes";
 import { createError } from "../middleware/errorHandler";
 import { AuditLogFilter, AuditLogModel } from "../models/auditLog";
+import { auditService } from "../services/auditService";
+import { providerQueueControl } from "../queue/providerQueueControl";
+import { createQueueControlRouter } from "./admin/queueControl";
 
 import adminControllerRouter, {
   getDeadLetterJobsHandler,
@@ -1812,6 +1815,20 @@ router.get(
   requireAdmin,
   logAdminAction("VIEW_DLQ"),
   dlqInspectorHandler,
+);
+
+// Per-provider pause/resume for maintenance windows (#2282):
+//   POST /api/admin/queues/:provider/pause
+//   POST /api/admin/queues/:provider/resume
+//   GET  /api/admin/queues/:provider/status
+//   GET  /api/admin/queues/paused
+router.use(
+  "/queues",
+  requireAdmin,
+  createQueueControlRouter({
+    control: providerQueueControl,
+    audit: (entry) => auditService.logAdminAction(entry),
+  }),
 );
 
 /**
