@@ -1,7 +1,11 @@
 import { Router, Request, Response } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import logger from "../utils/logger";
-import { pool } from "../config/database";
+import {
+  ReplicaPoolStatus,
+  getReplicaPoolStatus,
+  pool,
+} from "../config/database";
 import { redisClient } from "../config/redis";
 import { checkMobileMoneyHealth } from "../services/mobilemoney/providers/healthCheck";
 
@@ -27,6 +31,7 @@ interface DeepHealthResponse {
     redis: ComponentStatus;
     horizon: ComponentStatus;
     providers: Record<string, ComponentStatus>;
+    replicas: ReplicaPoolStatus[];
   };
 }
 
@@ -126,7 +131,8 @@ async function checkProviders(): Promise<Record<string, ComponentStatus>> {
  * reachable, and 503 otherwise. Horizon and provider gateway outages are
  * reported but do not by themselves flip the top-level status, since the
  * service can still accept and queue transactions while a downstream
- * provider is degraded.
+ * provider is degraded. Read replicas are likewise informational: reads
+ * fall back to the primary when no replica is usable.
  */
 router.get("/health/deep", async (_req: Request, res: Response) => {
   const [database, redis, horizon, providers] = await Promise.all([
@@ -153,6 +159,8 @@ router.get("/health/deep", async (_req: Request, res: Response) => {
       redis,
       horizon,
       providers,
+      // Cached by the replica lag monitor, so this adds no extra DB queries.
+      replicas: getReplicaPoolStatus(),
     },
   };
 
